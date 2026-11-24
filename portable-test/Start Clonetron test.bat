@@ -11,7 +11,7 @@ if not defined PY ( where py >nul 2>nul && set "PY=py -3" )
 if not defined PY ( where python >nul 2>nul && set "PY=python" )
 if not defined PY (
     for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*" "%ProgramFiles%\Python3*") do (
-        if exist "%%~D\python.exe" set "PY=%%~D\python.exe"
+        if exist "%%~D\python.exe" set PY="%%~D\python.exe"
     )
 )
 if not defined PY (
