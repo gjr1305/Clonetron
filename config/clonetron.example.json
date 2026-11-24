@@ -1,0 +1,19 @@
+{
+  "_note": "Copy this file to ~/clonetron.json on the Pi and change the values for your build. Anything you delete keeps the built-in default.",
+
+  "serial_port": "/dev/ttyACM0",
+
+  "wells_mm": {
+    "BL": [66.0, 42.3],  "BR": [66.0, 81.4],
+    "ML": [105.1, 42.3], "MR": [105.1, 81.4],
+    "FL": [144.2, 42.3], "FR": [144.2, 81.4]
+  },
+  "scan_order": ["BL", "BR", "MR", "ML", "FL", "FR"],
+  "well_radius_mm": 17.4,
+
+  "z_default_mm": 18.0,
+  "z_limit_mm": 28.0,
+  "z_backlash_mm": 0.5,
+
+  "output_rotate_deg": 180
+}
