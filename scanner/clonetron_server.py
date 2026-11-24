@@ -41,6 +41,24 @@ import hw      # noqa: E402
 WEB = os.path.join(HERE, "web")
 AUTH_FILE = os.path.expanduser("~/.clonetron_auth.json")
 SESSION_HOURS = 12
+GRBL_ERRORS = {   # the GRBL messages people actually meet, in plain words
+    "error:8": "the stage isn't ready: press Home first",
+    "error:9": "the stage is locked (alarm): press Home first",
+    "error:15": "that move would go past the end of the stage",
+    "ALARM:1": "a limit switch was hit: press Home",
+    "ALARM:2": "that move would go past the end of the stage: press Home",
+    "ALARM:8": "homing didn't find the switch: check the endstop wiring, then press Home",
+    "ALARM:9": "homing didn't find the switch: check the endstop wiring, then press Home",
+}
+
+
+def plain(err):
+    for code, text in GRBL_ERRORS.items():
+        if code in err:
+            return f"{text} (GRBL {code})"
+    return err
+
+
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
 
@@ -138,7 +156,7 @@ class App:
             fn()
             return None
         except Exception as e:
-            return str(e)
+            return plain(str(e))
         finally:
             self.action = ""
             self.busy.release()
@@ -148,6 +166,9 @@ class App:
             return "bad jog"
 
         def do():
+            st, _ = self.stage.pos()
+            if st.startswith("Alarm"):
+                raise RuntimeError("the stage hasn't been homed: press Home first")
             if axis == "Z" and dist > 0:
                 _, (_, _, z) = self.stage.pos()
                 if z + dist > self.cfg["z_limit_mm"]:
