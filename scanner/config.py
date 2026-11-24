@@ -20,7 +20,7 @@ DEFAULTS = {
     },
     "scan_order": ["BL", "BR", "MR", "ML", "FL", "FR"],
     "well_radius_mm": 17.4,
-    "z_default_mm": 18.0,
+    "z_default_mm": 19.6,
     "z_limit_mm": 28.0,
     "z_backlash_mm": 0.5,
     "output_rotate_deg": 180,

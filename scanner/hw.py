@@ -118,7 +118,7 @@ class SimStage:
         self._cancel.set()
 
     def close(self):
-        pass
+        self.state = "Alarm"      # like GRBL resetting when the serial port is reopened
 
 
 class SimCamera:
@@ -181,6 +181,67 @@ class SimCamera:
 
     def stop(self):
         pass
+
+
+def autofocus(stage, cam, cam_lock, z_start, z_limit):
+    """Coarse then fine Z sweep around z_start (mm from home), same method as the
+    scan script: Z only ever moves up during a sweep. Returns (best z, contrast)."""
+    def score_at(z, first):
+        if first:
+            stage.goto(z=z)                 # dip below and come up
+        else:
+            stage.z_up_to(z)
+        time.sleep(0.1)
+        with cam_lock:
+            cam.capture_array("main")       # throw away a frame taken while moving
+            img = cam.capture_array("main")
+        return sharpness_of(cv2.resize(img, PREVIEW, interpolation=cv2.INTER_AREA))
+
+    def sweep(centre, half, step):
+        zs = np.arange(centre - half, centre + half + step / 2, step)
+        zs = zs[(zs <= z_limit) & (zs >= 0.5)]
+        return zs, np.array([score_at(float(z), k == 0) for k, z in enumerate(zs)])
+
+    def peak(zs, v):
+        i = int(np.argmax(v))
+        if 0 < i < len(v) - 1:
+            d = v[i - 1] - 2 * v[i] + v[i + 1]
+            if d < 0:
+                return zs[i] + 0.5 * (v[i - 1] - v[i + 1]) / d * (zs[1] - zs[0]), i
+        return zs[i], i
+
+    centre = z_start
+    for _ in range(3):
+        zs, v = sweep(centre, 0.30, 0.05)
+        best, i = peak(zs, v)
+        if 0 < i < len(zs) - 1:
+            break
+        centre = zs[i]
+    ratio = float(v.max() / max(np.median(v), 1e-6))
+    zs, v = sweep(best, 0.06, 0.015)
+    best, _ = peak(zs, v)
+    stage.goto(z=float(best))
+    return float(best), ratio
+
+
+def placeholder(text, sub=""):
+    """Grey picture with a message, shown while a job has the camera."""
+    w, h = PREVIEW
+    img = np.full((h, w, 3), 28, np.uint8)
+    for t, y, sc, col in ((text, h // 2 - 10, 1.0, (250, 139, 167)), (sub, h // 2 + 30, 0.6, (200, 200, 200))):
+        if t:
+            (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, sc, 2)
+            cv2.putText(img, t, ((w - tw) // 2, y), cv2.FONT_HERSHEY_SIMPLEX, sc, col, 2, cv2.LINE_AA)
+    return img
+
+
+def close_hardware(stage, cam):
+    for f in (getattr(cam, "stop", None), getattr(cam, "close", None), stage.close):
+        try:
+            if f:
+                f()
+        except Exception as e:
+            print("(while closing:", e, ")")
 
 
 class NoFlat:

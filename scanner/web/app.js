@@ -35,6 +35,13 @@ $('stopBtn').onclick = stop;
 
 function show(d) {
   if (!d || d.x === undefined) return;
+  if (d.msg) msg(d.msg);
+  const jb = $('jobbanner');
+  if (jb) {
+    const running = d.job && (d.job.status === 'running' || d.job.status === 'cancelling');
+    jb.style.display = running ? 'block' : 'none';
+    if (running) jb.innerHTML = `<b>${d.job.title}</b> is running, so the camera and stage are in use. <a href="/setup">See progress</a>`;
+  }
   $('px').textContent = `${Math.abs(d.x).toFixed(2)} ${d.x < 0 ? 'left' : d.x > 0 ? 'right' : ''}`;
   $('py').textContent = `${Math.abs(d.y).toFixed(2)} ${d.y > 0 ? 'towards' : d.y < 0 ? 'away' : ''}`;
   $('pz').textContent = d.z.toFixed(3);
@@ -76,3 +83,17 @@ document.addEventListener('keydown', e => {
 
 // reconnect the live picture if it drops
 $('live').onerror = () => setTimeout(() => { $('live').src = '/stream.mjpg?' + Date.now(); }, 1500);
+
+// wells, laid out like the plate (rows of two, as they sit on the stage)
+fetch('/api/info').then(r => r.json()).then(info => {
+  const p = $('plate'); if (!p) return;
+  const names = Object.keys(info.wells).sort((a, b) =>
+    info.wells[a][0] - info.wells[b][0] || info.wells[a][1] - info.wells[b][1]);
+  names.forEach(w => {
+    const b = document.createElement('button');
+    b.textContent = w; b.title = 'Go to the centre of ' + w;
+    b.onclick = () => { msg('Going to ' + w + '…'); post('/api/well', {well: w}); };
+    p.appendChild(b);
+  });
+});
+$('afBtn').onclick = () => { msg('Autofocusing… (20–60 s)'); post('/api/autofocus'); };

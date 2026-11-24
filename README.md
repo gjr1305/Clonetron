@@ -72,8 +72,10 @@ python3 clonetron_server.py
 ```
 
 Open `http://<IP on the LCD>:8000` in a browser on the same network and log in.
-So far it has live view, X/Y/Z jogging with step sizes, Home, Stop and a live
-sharpness meter. Focus tools, scanning and saving to USB come next.
+So far it has live view, X/Y/Z jogging with step sizes, Home, Stop, a live
+sharpness meter, Go to well and Autofocus. The Setup page runs the flat-field
+calibration and makes the focus map, with live progress and a Cancel button.
+Scanning and saving to USB come next.
 
 **Try it without the scanner.** On any laptop with Python:
 
@@ -95,7 +97,7 @@ python analysis/stitch_scan.py "path\to\plate_folder"
 ## Roadmap
 
 1. **Repo and settings file** (done)
-2. **Scanner app** (in progress: live view and jogging work): browser control from any laptop on the network: live view,
+2. **Scanner app** (in progress: live view, jogging, focus tools and setup work): browser control from any laptop on the network: live view,
    jog, focus, scan queue, saving to USB, password protected
 3. **Analysis core:** stitching, well and colony detection, cells per colony,
    measurements table

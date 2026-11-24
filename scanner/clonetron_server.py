@@ -14,7 +14,8 @@ then open http://127.0.0.1:8000 . The simulator asks you to set a password
 on first run too.
 
 Uses only Python's standard library plus numpy and OpenCV, which the Pi
-already has. Step 2a: login, live view, jog, home, stop.
+already has. Steps 2a-2b: login, live view, jog, home, stop, go to well, autofocus,
+flat-field calibration and focus map.
 """
 import argparse
 import getpass
@@ -23,7 +24,9 @@ import hmac
 import json
 import os
 import secrets
+import signal
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -97,12 +100,25 @@ def check_password(pw):
 
 
 # ---------------------------------------------------------------- shared state
+MAP_FILE = os.path.join(config.SCANS_DIR, "focus_map.json")
+CAMERA_FILE = os.path.join(config.SCANS_DIR, "camera.json")
+FLAT_FILE = os.path.join(config.SCANS_DIR, "flat.npy")
+OFFSETS_FILE = os.path.join(config.SCANS_DIR, "well_offsets.json")
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 class App:
     def __init__(self, cfg, sim):
         self.cfg, self.sim = cfg, sim
-        self.stage, self.cam, self.flat = hw.open_hardware(cfg, sim)
         self.cam_lock = threading.Lock()
-        self.busy = threading.Lock()              # one stage action at a time
+        self.busy = threading.Lock()              # one stage action (or job) at a time
         self.action = ""                          # what the stage is doing, for the page
         self.sharp = 0.0
         self.frame = None
@@ -111,18 +127,27 @@ class App:
         self.stop_evt = threading.Event()
         self.fail = {}                            # ip -> (count, last time): slow down guessing
         self._last_pos = (0.0, 0.0, 0.0)
+        self.job = None                           # {"kind", "status", "log", "proc", ...}
+        self.stage, self.cam, self.flat = hw.open_hardware(cfg, sim)
         threading.Thread(target=self._preview_loop, daemon=True).start()
 
+    # -- live picture
     def _preview_loop(self):
         while not self.stop_evt.is_set():
             t = time.time()
             try:
-                with self.cam_lock:
-                    img = self.cam.capture_array("main")
-                small = cv2.resize(img, hw.PREVIEW, interpolation=cv2.INTER_AREA)
-                self.sharp = hw.sharpness_of(small)
-                ok, jpg = cv2.imencode(".jpg", self.flat.apply(small),
-                                       [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if self.cam is None:              # a job has the camera
+                    j = self.job or {}
+                    small = hw.placeholder(j.get("title", "Busy"), (j.get("log") or [""])[-1][:70])
+                    self.sharp = 0.0
+                    time.sleep(0.5)
+                else:
+                    with self.cam_lock:
+                        img = self.cam.capture_array("main")
+                    small = cv2.resize(img, hw.PREVIEW, interpolation=cv2.INTER_AREA)
+                    self.sharp = hw.sharpness_of(small)
+                    small = self.flat.apply(small)
+                ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 if ok:
                     with self.frame_cond:
                         self.frame = jpg.tobytes()
@@ -132,8 +157,11 @@ class App:
                 time.sleep(0.5)
             time.sleep(max(0.0, 0.1 - (time.time() - t)))
 
+    # -- status
     def state(self):
-        if self.busy.locked() and not self.sim:
+        if self.cam is None:
+            st, p = "Job running", self._last_pos
+        elif self.busy.locked() and not self.sim:
             st, p = "Moving", self._last_pos      # GRBL is busy with the move; don't wait on it
         else:
             try:
@@ -142,13 +170,37 @@ class App:
             except Exception as e:
                 st, p = "Error: " + str(e), self._last_pos
         x, y, z = p
+        j = self.job
         return {"state": st, "x": round(x, 3), "y": round(y, 3), "z": round(z, 4),
                 "sharp": round(self.sharp, 1), "busy": self.busy.locked(),
                 "action": self.action, "sim": self.sim,
-                "z_limit": self.cfg["z_limit_mm"]}
+                "z_limit": self.cfg["z_limit_mm"],
+                "job": None if not j else {k: j[k] for k in ("kind", "title", "status", "started")}}
 
+    def info(self):
+        mp = read_json(MAP_FILE)
+        cam = read_json(CAMERA_FILE)
+        offs = read_json(OFFSETS_FILE) or {}
+        return {
+            "wells": self.cfg["wells_mm"], "order": self.cfg["scan_order"],
+            "well_radius": self.cfg["well_radius_mm"], "z_default": self.cfg["z_default_mm"],
+            "map": None if not mp else {"made": mp.get("made"), "spots": len(mp.get("points", [])),
+                                        "range_um": self._map_range(mp)},
+            "camera": None if not cam else {"made": cam.get("made"),
+                                            "exposure_ms": round(cam.get("ExposureTime", 0) / 1000, 2)},
+            "flat": os.path.exists(FLAT_FILE), "offsets": sorted(offs),
+        }
+
+    @staticmethod
+    def _map_range(mp):
+        zz = [p[3] for p in mp.get("points", [])]
+        return round(1000 * (max(zz) - min(zz))) if zz else None
+
+    # -- stage actions
     def run(self, label, fn):
         """Do a stage action unless another one is running. Returns an error string or None."""
+        if self.cam is None:
+            return "a job is running (" + (self.job or {}).get("title", "") + ")"
         if not self.busy.acquire(blocking=False):
             return "the stage is busy (" + self.action + ")"
         self.action = label
@@ -161,14 +213,17 @@ class App:
             self.action = ""
             self.busy.release()
 
+    def _need_home(self):
+        st, _ = self.stage.pos()
+        if st.startswith("Alarm"):
+            raise RuntimeError("the stage hasn't been homed: press Home first")
+
     def jog(self, axis, dist):
         if axis not in ("X", "Y", "Z") or not 0 < abs(dist) <= 50:
             return "bad jog"
 
         def do():
-            st, _ = self.stage.pos()
-            if st.startswith("Alarm"):
-                raise RuntimeError("the stage hasn't been homed: press Home first")
+            self._need_home()
             if axis == "Z" and dist > 0:
                 _, (_, _, z) = self.stage.pos()
                 if z + dist > self.cfg["z_limit_mm"]:
@@ -182,11 +237,140 @@ class App:
     def stop(self):
         self.stage.stop()
 
+    def well_target(self, w):
+        """Centre of well w in mm from home (X negative), and a focus height."""
+        if w not in self.cfg["wells_mm"]:
+            raise RuntimeError("unknown well " + w)
+        wx, wy = self.cfg["wells_mm"][w]
+        off = (read_json(OFFSETS_FILE) or {}).get(w)
+        if off and abs(off[0]) < 4 and abs(off[1]) < 4:
+            wx, wy = wx + off[0], wy + off[1]
+        x, y = -wx, wy
+        z = self.cfg["z_default_mm"]
+        mp = read_json(MAP_FILE)
+        if mp:
+            pts = [q for q in mp.get("points", []) if q[0] == w]
+            if pts:
+                z = min(pts, key=lambda q: (q[1] - x) ** 2 + (q[2] - y) ** 2)[3]
+        return x, y, z
+
+    def goto_well(self, w):
+        def do():
+            self._need_home()
+            x, y, z = self.well_target(w)
+            self.stage.goto(z=max(0.5, z - 2))      # come in a little low, then up to focus
+            self.stage.goto(x, y)
+            self.stage.goto(z=z)
+        return self.run(f"going to {w}", do)
+
+    def autofocus(self):
+        result = {}
+
+        def do():
+            self._need_home()
+            _, (_, _, z) = self.stage.pos()
+            if z < 5:
+                z = self.cfg["z_default_mm"]
+            result["z"], result["contrast"] = hw.autofocus(
+                self.stage, self.cam, self.cam_lock, z, self.cfg["z_limit_mm"])
+            if result["contrast"] < 1.15:
+                raise RuntimeError("couldn't find a clear focus here (nothing sharp nearby). "
+                                   "Move to a spot with cells, get roughly into focus by eye, "
+                                   "and try again")
+        err = self.run("autofocusing", do)
+        return err, result
+
+    # -- jobs: the tested Pi scripts, run with the camera and stage handed over to them
+    JOBS = {
+        "flatfield": ("Flat-field calibration", ["flatfield_calibrate.py"]),
+        "map": ("Making the focus map", ["plate_scan.py", "--make-map"]),
+    }
+
+    def start_job(self, kind, opts):
+        if kind not in self.JOBS:
+            return "unknown job"
+        if self.job and self.job["status"] == "running":
+            return "a job is already running"
+        if not self.busy.acquire(blocking=False):
+            return "the stage is busy (" + self.action + ")"
+        title, argv = self.JOBS[kind]
+        if kind == "map":
+            z = float(opts.get("z") or self.cfg["z_default_mm"])
+            if not 5 <= z <= self.cfg["z_limit_mm"]:
+                self.busy.release()
+                return "starting focus height must be between 5 and the Z limit"
+            argv = argv + ["--z", f"{z:.3f}"]
+            wells = [w for w in opts.get("wells", []) if w in self.cfg["wells_mm"]]
+            if wells:
+                argv += ["--wells", ",".join(wells)]
+        if self.sim:
+            argv = ["sim_job.py", kind]
+        self.action = title
+        self.job = {"kind": kind, "title": title, "status": "running", "log": [],
+                    "started": time.strftime("%H:%M:%S"), "proc": None, "code": None}
+        threading.Thread(target=self._run_job, args=(argv,), daemon=True).start()
+        return None
+
+    def _run_job(self, argv):
+        j = self.job
+        try:
+            with self.cam_lock:                    # hand the hardware to the script
+                cam, self.cam = self.cam, None
+            hw.close_hardware(self.stage, cam)
+            j["log"].append("$ python3 " + " ".join(argv))
+            proc = subprocess.Popen([sys.executable, "-u"] + argv, cwd=HERE, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+                                    preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+            j["proc"] = proc
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    j["log"].append(line)
+                    del j["log"][:-400]
+            j["code"] = proc.wait()
+            if j["status"] == "cancelling":
+                j["status"] = "cancelled"
+            else:
+                j["status"] = "done" if j["code"] == 0 else "failed"
+        except Exception as e:
+            j["log"].append("Error: " + str(e))
+            j["status"] = "failed"
+        finally:
+            j["proc"] = None
+            j["log"].append("Reconnecting to the scanner...")
+            try:
+                self.stage, cam, self.flat = hw.open_hardware(self.cfg, self.sim)
+                self.cam = cam
+                if j["status"] == "done":          # the script homed already, so this is safe
+                    j["log"].append("Homing...")
+                    self.stage.do_home()
+                j["log"].append("Ready.")
+            except Exception as e:
+                j["log"].append("Couldn't reconnect: " + str(e) + ". Restart the app.")
+            self.action = ""
+            self.busy.release()
+
+    def cancel_job(self):
+        j = self.job
+        if not j or j["status"] != "running" or not j.get("proc"):
+            return "no job is running"
+        j["status"] = "cancelling"
+        j["proc"].send_signal(signal.SIGINT)       # the scripts stop the stage cleanly on Ctrl+C
+        threading.Timer(30, lambda p=j["proc"]: p and p.poll() is None and p.kill()).start()
+        return None
+
+    def job_state(self):
+        j = self.job
+        if not j:
+            return {"job": None}
+        return {"job": {k: j[k] for k in ("kind", "title", "status", "started", "code")},
+                "log": j["log"][-200:]}
+
     def close(self):
         self.stop_evt.set()
         time.sleep(0.2)
-        self.cam.stop()
-        self.stage.close()
+        if self.cam is not None:
+            hw.close_hardware(self.stage, self.cam)
 
 
 # ---------------------------------------------------------------- web server
@@ -254,6 +438,14 @@ def make_handler(app):
                 return self._file(path[1:])
             if path == "/api/state":
                 return self._send(200, app.state())
+            if path == "/api/info":
+                return self._send(200, app.info())
+            if path == "/api/job":
+                return self._send(200, app.job_state())
+            if path == "/setup":
+                return self._file("setup.html")
+            if path == "/setup.js":
+                return self._file("setup.js")
             if path == "/stream.mjpg":
                 return self._stream()
             if path == "/logout":
@@ -292,6 +484,20 @@ def make_handler(app):
             elif path == "/api/stop":
                 app.stop()
                 err = None
+            elif path == "/api/well":
+                err = app.goto_well(str(b.get("well", "")))
+            elif path == "/api/autofocus":
+                err, res = app.autofocus()
+                if not err:
+                    d = app.state()
+                    d["msg"] = f"In focus at Z {res['z']:.3f} mm (contrast {res['contrast']:.1f})"
+                    return self._send(200, d)
+            elif path == "/api/job/start":
+                err = app.start_job(str(b.get("kind", "")), b)
+                if not err:
+                    return self._send(200, app.job_state())
+            elif path == "/api/job/cancel":
+                err = app.cancel_job()
             else:
                 return self._send(404, {"error": "not found"})
             d = app.state()
