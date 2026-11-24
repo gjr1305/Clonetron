@@ -29,6 +29,9 @@ takes about 213 photos.
 
 ```
 scanner/                 runs on the Pi
+  clonetron_server.py    the scanner app: control everything from a browser
+  web/                   the app's pages
+  hw.py, config.py       stage/camera access (and the simulator), settings
   plate_scan.py          focus map, scan, blur check and re-shoot
   live_focus.py          live view, jogging and manual focus checks
   flatfield_calibrate.py camera colour and flat-field calibration (plate out)
@@ -58,6 +61,30 @@ To update later: `cd ~/clonetron && git pull`.
 Needs `python3-picamera2`, `python3-opencv`, `python3-numpy` and `python3-serial`
 (all from `apt`). Calibration files and scans go to `~/scans`.
 
+## The scanner app
+
+On the Pi, choose a password once, then start the app:
+
+```bash
+cd ~/clonetron/scanner
+python3 clonetron_server.py --set-password
+python3 clonetron_server.py
+```
+
+Open `http://<IP on the LCD>:8000` in a browser on the same network and log in.
+So far it has live view, X/Y/Z jogging with step sizes, Home, Stop and a live
+sharpness meter. Focus tools, scanning and saving to USB come next.
+
+**Try it without the scanner.** On any laptop with Python:
+
+```bash
+py -m pip install --user numpy opencv-python
+py scanner\clonetron_server.py --sim
+```
+
+then open <http://127.0.0.1:8000>. The simulator draws a fake stained plate
+that is only sharp near Z = 19.6 mm, so the focus meter can be tried too.
+
 ## Stitching on a laptop
 
 ```bash
@@ -68,7 +95,7 @@ python analysis/stitch_scan.py "path\to\plate_folder"
 ## Roadmap
 
 1. **Repo and settings file** (done)
-2. **Scanner app:** browser control from any laptop on the network: live view,
+2. **Scanner app** (in progress: live view and jogging work): browser control from any laptop on the network: live view,
    jog, focus, scan queue, saving to USB, password protected
 3. **Analysis core:** stitching, well and colony detection, cells per colony,
    measurements table

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clonetron</title>
+<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header>
+  <div class="brand"><img src="/favicon.svg" width="24" height="24" alt="">Clonetron</div>
+  <nav>
+    <a href="/" class="on">Live</a>
+    <a class="soon" title="Coming in step 2c">Scan</a>
+    <a class="soon" title="Coming in step 2b">Setup</a>
+  </nav>
+  <div class="spacer"></div>
+  <span id="sim" class="pill sim" hidden>SIMULATOR</span>
+  <span id="st" class="pill">connecting…</span>
+  <a class="logout" href="/logout">Log out</a>
+</header>
+
+<main>
+  <section class="view">
+    <div id="banner" class="banner">The stage hasn't been homed since the scanner started. Press <b>Home</b> before moving.</div>
+    <div class="frame cross" id="frame"><img id="live" src="/stream.mjpg" alt="live camera"></div>
+    <div class="under">
+      <span class="hint">Sharpness</span>
+      <div class="sharpbar"><div id="sbar"></div></div>
+      <span class="sharpnum" id="snum">–</span>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="card">
+      <h3>Position (mm from home)</h3>
+      <div class="pos">
+        <span>X</span><span id="px">–</span>
+        <span>Y</span><span id="py">–</span>
+        <span>Z</span><span id="pz">–</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Step size</h3>
+      <div class="steps" id="steps">
+        <button data-s="0.01">0.01</button><button data-s="0.02">0.02</button><button data-s="0.05">0.05</button>
+        <button data-s="0.1">0.1</button><button data-s="1" class="on">1</button>
+        <button data-s="5">5</button><button data-s="10">10</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Move</h3>
+      <div class="pad">
+        <span></span><button data-j="Y,-1" title="W">&#9650;</button><span></span>
+        <button data-j="X,-1" title="A">&#9664;</button><button id="homeBtn" title="H">&#8962;</button><button data-j="X,1" title="D">&#9654;</button>
+        <span></span><button data-j="Y,1" title="S">&#9660;</button><span></span>
+      </div>
+      <div class="zrow">
+        <button data-j="Z,1" title="R">Z up</button>
+        <button data-j="Z,-1" title="F">Z down</button>
+      </div>
+      <div class="zrow">
+        <button class="danger" id="stopBtn" title="Space">STOP</button>
+      </div>
+      <p class="hint">Keys (click the picture first): <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move,
+        <kbd>R</kbd>/<kbd>F</kbd> focus, <kbd>H</kbd> home, <kbd>Space</kbd> stop,
+        <kbd>[</kbd>/<kbd>]</kbd> smaller/bigger step.</p>
+      <div id="msg" class="msg"></div>
+    </div>
+  </aside>
+</main>
+<script src="/app.js"></script>
+</body></html>
