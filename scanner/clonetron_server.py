@@ -42,6 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config  # noqa: E402
 import hw      # noqa: E402
+import lcd     # noqa: E402
 import usb     # noqa: E402
 
 WEB = os.path.join(HERE, "web")
@@ -139,7 +140,11 @@ class App:
         if sim:
             os.makedirs(usb.SIM_ROOT, exist_ok=True)       # a pretend USB stick
         self._latest = (None, 0.0)                         # newest scan photo shown in the preview
+        self.port = int(cfg.get("web_port", 8000))
+        self.lcd = lcd.Lcd(enabled=not sim)
+        self.lcd_lines = []                                # what the LCD shows, also sent to the page
         threading.Thread(target=self._preview_loop, daemon=True).start()
+        threading.Thread(target=self._lcd_loop, daemon=True).start()
 
     # -- live picture
     def _preview_loop(self):
@@ -197,6 +202,60 @@ class App:
         cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (250, 139, 167), 2, cv2.LINE_AA)
         return img
 
+    # -- front-panel LCD
+    @staticmethod
+    def ip():
+        ips = os.popen("hostname -I 2>/dev/null").read().split()
+        return ips[0] if ips else None
+
+    def _lcd_text(self):
+        j = self.job or {}
+        running = j.get("status") in ("running", "cancelling")
+        if running and j.get("kind") == "scan":
+            p = j.get("progress") or {}
+            tot = p.get("total") or 0
+            pct = f" {100 * p.get('taken', 0) // tot}%" if tot else ""
+            left = p.get("left_min")
+            name = j["title"].replace("Scanning ", "", 1)
+            return [f"Scanning {p.get('well') or ''}".strip(),
+                    f"{p.get('taken', 0)}/{tot or '?'} photos{pct}",
+                    f"~{left:.0f} min left" if left is not None else "starting...",
+                    name if j["status"] == "running" else "stopping..."]
+        if running:
+            last = (j.get("log") or [""])[-1].strip()
+            return [j.get("title", "Working"), last[:20], last[20:40], ""]
+        ip = self.ip()
+        line2 = f"{ip}:{self.port}" if ip else "no network"
+        if self.action:
+            line3 = self.action[:20]
+        else:
+            try:
+                st, _ = self.stage.pos()
+            except Exception:
+                st = "?"
+            line3 = "Press Home" if st.startswith("Alarm") else "Ready"
+        stick = None
+        try:
+            ss = usb.sticks(self.sim)
+            stick = ss[0] if ss else None
+        except Exception:
+            pass
+        line4 = f"USB {stick['free'] / 1e9:.1f}GB free" if stick else "No USB stick"
+        if j.get("kind") == "scan" and j.get("status") == "done" and time.time() - j.get("t_end", 0) < 3600:
+            line3 = "Scan done: Eject" if stick else "Scan done"
+        elif j.get("status") == "failed" and time.time() - j.get("t_end", 0) < 3600:
+            line3 = "Last job FAILED"
+        return ["Clonetron", line2, line3, line4]
+
+    def _lcd_loop(self):
+        while not self.stop_evt.is_set():
+            try:
+                self.lcd_lines = self._lcd_text()
+                self.lcd.show(self.lcd_lines)
+            except Exception as e:
+                print("lcd error:", e)
+            self.stop_evt.wait(2)
+
     # -- status
     def state(self):
         if self.cam is None:
@@ -214,7 +273,7 @@ class App:
         return {"state": st, "x": round(x, 3), "y": round(y, 3), "z": round(z, 4),
                 "sharp": round(self.sharp, 1), "busy": self.busy.locked(),
                 "action": self.action, "sim": self.sim,
-                "z_limit": self.cfg["z_limit_mm"],
+                "z_limit": self.cfg["z_limit_mm"], "lcd": self.lcd_lines,
                 "job": None if not j else {k: j.get(k) for k in ("kind", "title", "status", "started",
                                                                    "progress")}}
 
@@ -385,6 +444,7 @@ class App:
                 j["status"] = "cancelled"
             else:
                 j["status"] = "done" if j["code"] == 0 else "failed"
+            j["t_end"] = time.time()
             if j.get("progress") is not None and j["status"] == "done":
                 p = j["progress"]
                 p["taken"], p["left_min"] = p.get("total") or p["taken"], 0
@@ -496,6 +556,7 @@ class App:
     def close(self):
         self.stop_evt.set()
         time.sleep(0.2)
+        self.lcd.close()
         if self.cam is not None:
             hw.close_hardware(self.stage, self.cam)
 
@@ -687,6 +748,9 @@ def main():
     if a.set_password or not os.path.exists(AUTH_FILE):
         if not a.set_password:
             print("No password set yet.")
+            if not sys.stdin.isatty():
+                print("Run  python3 clonetron_server.py --set-password  in a terminal first.")
+                sys.exit(1)
         set_password()
         if a.set_password:
             return
@@ -694,6 +758,7 @@ def main():
     cfg = config.load()
     port = a.port or int(cfg.get("web_port", 8000))
     app = App(cfg, a.sim)
+    app.port = port
     host = "127.0.0.1" if a.local else ""
     httpd = Server((host, port), make_handler(app))
     if a.local or a.sim:
@@ -704,6 +769,9 @@ def main():
     print(f"\nClonetron{' (SIMULATOR)' if a.sim else ''} is running.")
     print(f"Open in a browser:  http://{where}:{port}")
     print("Ctrl+C here to stop.\n")
+    def _term(*_):                               # "systemctl stop" sends SIGTERM: shut down cleanly
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _term)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

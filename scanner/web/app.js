@@ -52,6 +52,7 @@ function show(d) {
                             : d.busy ? 'warn' : 'ok');
   $('banner').style.display = d.state === 'Alarm' ? 'block' : 'none';
   $('sim').hidden = !d.sim;
+  if (d.lcd && d.lcd.length && $('lcd')) $('lcd').textContent = d.lcd.map(l => l.padEnd(20).slice(0, 20)).join('\n');
   sharpMax = Math.max(sharpMax * 0.995, d.sharp, 1);
   $('sbar').style.width = Math.min(100, 100 * d.sharp / sharpMax) + '%';
   $('snum').textContent = d.sharp.toFixed(0);

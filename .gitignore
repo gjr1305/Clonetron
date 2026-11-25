@@ -221,3 +221,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# lgpio (used by the LCD) leaves these in the working folder
+.lgd-nfy*

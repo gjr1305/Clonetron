@@ -32,6 +32,8 @@ scanner/                 runs on the Pi
   clonetron_server.py    the scanner app: control everything from a browser
   web/                   the app's pages
   hw.py, config.py       stage/camera access (and the simulator), settings
+  usb.py, lcd.py         USB stick handling, front-panel LCD
+  install_service.sh     makes the app start when the Pi boots
   plate_scan.py          focus map, scan, blur check and re-shoot
   live_focus.py          live view, jogging and manual focus checks
   flatfield_calibrate.py camera colour and flat-field calibration (plate out)
@@ -86,6 +88,17 @@ the stick is pulled out or fills up. Press **Eject** before unplugging it. Each
 scan folder also gets copies of the calibration files, so the stick alone is
 enough for analysis on a laptop.
 
+**Start it at boot.** Once it works, run this once on the Pi:
+
+```bash
+cd ~/clonetron/scanner && bash install_service.sh
+```
+
+It asks before changing anything. From then on the app starts by itself, the
+LCD shows the address to open, and during a scan it shows the well, photo count
+and time left. After a `git pull`, run `sudo systemctl restart clonetron`.
+`bash install_service.sh --remove` undoes it.
+
 **Try it without the scanner.** On any laptop with Python:
 
 ```bash
@@ -106,7 +119,7 @@ python analysis/stitch_scan.py "path\to\plate_folder"
 ## Roadmap
 
 1. **Repo and settings file** (done)
-2. **Scanner app** (in progress: live view, jogging, focus tools, setup and USB scanning work; start-at-boot next): browser control from any laptop on the network: live view,
+2. **Scanner app** (done: live view, jogging, focus tools, setup, USB scanning, start at boot, LCD status): browser control from any laptop on the network: live view,
    jog, focus, scan queue, saving to USB, password protected
 3. **Analysis core:** stitching, well and colony detection, cells per colony,
    measurements table
