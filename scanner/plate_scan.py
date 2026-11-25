@@ -333,6 +333,7 @@ class Writer:
 
     def __init__(self):
         self.q = queue.Queue(maxsize=6)
+        self.error = None                   # first photo that couldn't be saved
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
 
@@ -342,9 +343,17 @@ class Writer:
             if item is None:
                 return
             path, img = item
-            cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            try:
+                ok = cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            except Exception:
+                ok = False
+            if not ok and self.error is None:
+                self.error = path
 
     def put(self, path, img):
+        if self.error:
+            raise OSError(f"couldn't save {os.path.basename(self.error)} "
+                          f"(USB stick removed or full?)")
         self.q.put((path, img))
 
     def close(self):
@@ -1019,8 +1028,12 @@ def scan(a, wells, size):
     if mp:
         print(f"Focus map from {mp['made']} ({len(mp['points'])} spots)")
 
-    folder = os.path.join(SCANS, time.strftime("plate_%Y-%m-%d_%H%M%S"))
+    label = re.sub(r"[^A-Za-z0-9_-]+", "-", (a.name or "").strip()).strip("-")[:40]
+    folder = os.path.join(os.path.expanduser(a.out or SCANS),
+                          time.strftime("%Y-%m-%d_%H%M%S") + ("_" + label if label else "")
+                          if a.out else time.strftime("plate_%Y-%m-%d_%H%M%S"))
     os.makedirs(folder, exist_ok=True)
+    print(f"SCAN_FOLDER: {folder}", flush=True)
     for f in ("camera.json", "flat.npy", "focus_map.json"):
         if os.path.exists(os.path.join(SCANS, f)):
             shutil.copy2(os.path.join(SCANS, f), folder)
@@ -1030,6 +1043,7 @@ def scan(a, wells, size):
     hx, hy, hz = home
     zmin, zmax = hz + max(0.5, a.z - 3), hz + Z_LIMIT
     writer = Writer()
+    save_error = None
     taken, offset = 0, 0.0
     z_fixed = hz + a.z                         # height used when there is no map
     t_focus, t_photos, t_stitch = 0.0, 0.0, 0.0
@@ -1180,11 +1194,19 @@ def scan(a, wells, size):
     except KeyboardInterrupt:
         print("\nStopped. Halting the stage...")
         s.write(b"!"); time.sleep(0.3); s.write(b"\x18"); time.sleep(1)
+    except OSError as e:
+        save_error = str(e)
+        print(f"\nSAVE FAILED: {e}. Halting the stage...")
+        s.write(b"!"); time.sleep(0.3); s.write(b"\x18"); time.sleep(1)
     finally:
         writer.close()
         cam.stop()
         cam.close()
         s.close()
+    if save_error or writer.error:
+        print(f"Scan stopped because a photo couldn't be saved. Photos up to that point "
+              f"are in {folder}")
+        sys.exit(3)
 
     calib = load_calib()
     if os.path.exists(CALIB_FILE):
@@ -1203,14 +1225,15 @@ def scan(a, wells, size):
         print(f"  stitching              {t_stitch / 60:5.1f} min")
     print(f"  TOTAL                  {(time.time() - T0) / 60:5.1f} min")
     print(f"\nEverything is in {folder}")
-    print("Copy to the laptop (in Windows PowerShell):")
-    ip = (os.popen("hostname -I").read().split() or ["<Pi IP>"])[0]
-    print(f'  scp -r geofreyjohn@{ip}:~/scans/{os.path.basename(folder)} '
-          f'"C:\\My Documents\\Incubot\\scans"')
+    if a.out:
+        print("It's on the USB stick: press Eject in the app, then plug the stick into the laptop.")
+    else:
+        print("Copy to the laptop (in Windows PowerShell):")
+        ip = (os.popen("hostname -I").read().split() or ["<Pi IP>"])[0]
+        print(f'  scp -r geofreyjohn@{ip}:~/scans/{os.path.basename(folder)} '
+              f'"C:\\My Documents\\Incubot\\scans"')
     if not a.stitch:
-        print("Then stitch it on the laptop:")
-        print(f'  python "C:\\My Documents\\Incubot\\2026-11-19-pi-scripts\\stitch_scan.py" '
-              f'"C:\\My Documents\\Incubot\\scans\\{os.path.basename(folder)}"')
+        print("Then stitch it on the laptop:  python analysis\\stitch_scan.py <scan folder>")
 
 
 # ---------------------------------------------------------------- main
@@ -1250,6 +1273,9 @@ def main():
     p.add_argument("--af-every", type=int, default=0,
                    help="also re-focus every N photos (0 = never, default)")
     p.add_argument("--no-recheck", action="store_true", help="skip the blur check and re-shoots")
+    p.add_argument("--out", default=None,
+                   help="save the scan folder here (e.g. the USB stick) instead of ~/scans")
+    p.add_argument("--name", default="", help="plate name, added to the scan folder name")
     a = p.parse_args()
     if os.path.exists(OFFSETS_FILE):
         try:

@@ -22,8 +22,10 @@ import getpass
 import hashlib
 import hmac
 import json
+import re
 import os
 import secrets
+import shutil
 import signal
 import socketserver
 import subprocess
@@ -40,6 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config  # noqa: E402
 import hw      # noqa: E402
+import usb     # noqa: E402
 
 WEB = os.path.join(HERE, "web")
 AUTH_FILE = os.path.expanduser("~/.clonetron_auth.json")
@@ -104,6 +107,10 @@ MAP_FILE = os.path.join(config.SCANS_DIR, "focus_map.json")
 CAMERA_FILE = os.path.join(config.SCANS_DIR, "camera.json")
 FLAT_FILE = os.path.join(config.SCANS_DIR, "flat.npy")
 OFFSETS_FILE = os.path.join(config.SCANS_DIR, "well_offsets.json")
+PHOTOS_PER_WELL = 213          # 35 mm well, 3.2 x 2.4 mm photos, 10% overlap
+MB_PER_PHOTO = 1.3             # JPEG at quality 95 is ~0.8-1.1 MB; extra for re-shoots
+MIN_PER_WELL = 4.0             # rough time per well with the focus map and blur check
+PROGRESS_RE = re.compile(r"^\s*(\d+)/(\d+)\s+([\d.]+) min, ~([\d.]+) min left")
 
 
 def read_json(path):
@@ -129,6 +136,9 @@ class App:
         self._last_pos = (0.0, 0.0, 0.0)
         self.job = None                           # {"kind", "status", "log", "proc", ...}
         self.stage, self.cam, self.flat = hw.open_hardware(cfg, sim)
+        if sim:
+            os.makedirs(usb.SIM_ROOT, exist_ok=True)       # a pretend USB stick
+        self._latest = (None, 0.0)                         # newest scan photo shown in the preview
         threading.Thread(target=self._preview_loop, daemon=True).start()
 
     # -- live picture
@@ -138,7 +148,9 @@ class App:
             try:
                 if self.cam is None:              # a job has the camera
                     j = self.job or {}
-                    small = hw.placeholder(j.get("title", "Busy"), (j.get("log") or [""])[-1][:70])
+                    small = self._latest_photo(j)
+                    if small is None:
+                        small = hw.placeholder(j.get("title", "Busy"), (j.get("log") or [""])[-1][:70])
                     self.sharp = 0.0
                     time.sleep(0.5)
                 else:
@@ -156,6 +168,34 @@ class App:
                 print("preview error:", e)
                 time.sleep(0.5)
             time.sleep(max(0.0, 0.1 - (time.time() - t)))
+
+    def _latest_photo(self, j):
+        """During a scan, show the newest photo saved (the second newest, in case
+        the newest is still being written)."""
+        folder = (j.get("progress") or {}).get("folder")
+        if j.get("kind") != "scan" or not folder or not os.path.isdir(folder):
+            return None
+        path, t = self._latest
+        if time.time() - t > 1.5 or path is None:
+            try:
+                files = sorted((e for e in os.scandir(folder)
+                                if e.name.endswith(".jpg") and "_stitched" not in e.name),
+                               key=lambda e: e.stat().st_mtime)
+                path = files[-2].path if len(files) > 1 else None
+            except OSError:
+                path = None
+            self._latest = (path, time.time())
+        if not path:
+            return None
+        img = cv2.imread(path)
+        if img is None:
+            return None
+        img = cv2.resize(img, hw.PREVIEW, interpolation=cv2.INTER_AREA)
+        p = j["progress"]
+        txt = f"{os.path.basename(path)}   {p.get('taken', 0)}/{p.get('total', '?')}"
+        cv2.rectangle(img, (0, 0), (hw.PREVIEW[0], 34), (20, 20, 20), -1)
+        cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (250, 139, 167), 2, cv2.LINE_AA)
+        return img
 
     # -- status
     def state(self):
@@ -175,7 +215,8 @@ class App:
                 "sharp": round(self.sharp, 1), "busy": self.busy.locked(),
                 "action": self.action, "sim": self.sim,
                 "z_limit": self.cfg["z_limit_mm"],
-                "job": None if not j else {k: j[k] for k in ("kind", "title", "status", "started")}}
+                "job": None if not j else {k: j.get(k) for k in ("kind", "title", "status", "started",
+                                                                   "progress")}}
 
     def info(self):
         mp = read_json(MAP_FILE)
@@ -284,6 +325,7 @@ class App:
     JOBS = {
         "flatfield": ("Flat-field calibration", ["flatfield_calibrate.py"]),
         "map": ("Making the focus map", ["plate_scan.py", "--make-map"]),
+        "scan": ("Scanning", ["plate_scan.py"]),
     }
 
     def start_job(self, kind, opts):
@@ -303,11 +345,20 @@ class App:
             wells = [w for w in opts.get("wells", []) if w in self.cfg["wells_mm"]]
             if wells:
                 argv += ["--wells", ",".join(wells)]
+        if kind == "scan":
+            err, extra = self._scan_args(opts)
+            if err:
+                self.busy.release()
+                return err
+            argv = argv + extra
+            title = "Scanning " + (opts.get("name") or "plate")
         if self.sim:
-            argv = ["sim_job.py", kind]
+            argv = ["sim_job.py", kind] + (argv[1:] if kind == "scan" else [])
         self.action = title
         self.job = {"kind": kind, "title": title, "status": "running", "log": [],
-                    "started": time.strftime("%H:%M:%S"), "proc": None, "code": None}
+                    "started": time.strftime("%H:%M:%S"), "proc": None, "code": None,
+                    "progress": {"taken": 0, "total": None, "well": None, "left_min": None,
+                                 "folder": None} if kind == "scan" else None}
         threading.Thread(target=self._run_job, args=(argv,), daemon=True).start()
         return None
 
@@ -327,11 +378,16 @@ class App:
                 if line:
                     j["log"].append(line)
                     del j["log"][:-400]
+                    if j.get("progress") is not None:
+                        self._parse_progress(j["progress"], line)
             j["code"] = proc.wait()
             if j["status"] == "cancelling":
                 j["status"] = "cancelled"
             else:
                 j["status"] = "done" if j["code"] == 0 else "failed"
+            if j.get("progress") is not None and j["status"] == "done":
+                p = j["progress"]
+                p["taken"], p["left_min"] = p.get("total") or p["taken"], 0
         except Exception as e:
             j["log"].append("Error: " + str(e))
             j["status"] = "failed"
@@ -350,6 +406,76 @@ class App:
             self.action = ""
             self.busy.release()
 
+    @staticmethod
+    def _parse_progress(p, line):
+        m = PROGRESS_RE.match(line)
+        if m:
+            p["taken"], p["total"] = int(m[1]), int(m[2])
+            p["left_min"] = float(m[4])
+        elif line.startswith("SCAN_FOLDER: "):
+            p["folder"] = line[len("SCAN_FOLDER: "):].strip()
+        elif re.fullmatch(r"[A-Z]{2}:", line.strip()):
+            p["well"] = line.strip()[:-1]
+        elif "photos per well" in line:
+            m2 = re.search(r"(\d+) in total", line)
+            if m2:
+                p["total"] = int(m2[1])
+
+    def estimate(self, wells):
+        n = len([w for w in wells if w in self.cfg["wells_mm"]])
+        return {"photos": n * PHOTOS_PER_WELL, "mb": round(n * PHOTOS_PER_WELL * MB_PER_PHOTO),
+                "minutes": round(n * MIN_PER_WELL + 1)}
+
+    def _scan_args(self, opts):
+        wells = [w for w in opts.get("wells", []) if w in self.cfg["wells_mm"]]
+        if not wells:
+            return "tick at least one well", None
+        wells = [w for w in self.cfg["scan_order"] if w in wells] + \
+                [w for w in wells if w not in self.cfg["scan_order"]]
+        stick = usb.get(self.sim)
+        if not stick:
+            return "plug in a USB stick: scans are only saved to USB", None
+        if not stick["writable"]:
+            return f"can't write to the USB stick {stick['label']} (is it write-protected?)", None
+        need = self.estimate(wells)["mb"] * 1e6
+        if stick["free"] < need:
+            return (f"not enough space on {stick['label']}: needs about {need / 1e9:.1f} GB, "
+                    f"has {stick['free'] / 1e9:.1f} GB free"), None
+        out = os.path.join(stick["mount"], usb.SCAN_SUBFOLDER)
+        os.makedirs(out, exist_ok=True)
+        name = re.sub(r"[^A-Za-z0-9_-]+", "-", str(opts.get("name", "")).strip()).strip("-")[:40]
+        args = ["--out", out, "--wells", ",".join(wells)]
+        if name:
+            args += ["--name", name]
+        if opts.get("mode") == "focus-once":
+            args.append("--focus-once")
+        if opts.get("reshoot") is False:
+            args.append("--no-recheck")
+        return None, args
+
+    def usb_state(self):
+        st = usb.sticks(self.sim)
+        stick = st[0] if st else None
+        return {"stick": stick, "unmounted": usb.unmounted(self.sim),
+                "recent": usb.recent_scans(stick) if stick else [],
+                "sim": self.sim, "sim_ejected": self.sim and not stick}
+
+    def eject(self):
+        j = self.job
+        if j and j["kind"] == "scan" and j["status"] in ("running", "cancelling"):
+            return "a scan is still running: stop it first"
+        st = usb.sticks(self.sim)
+        if not st:
+            return "no USB stick to eject"
+        err = usb.eject(st[0], self.sim)
+        if not err and self.sim:
+            shutil.move(usb.SIM_ROOT, usb.SIM_ROOT + "-ejected")
+        return err
+
+    def sim_plug(self):
+        if self.sim and os.path.isdir(usb.SIM_ROOT + "-ejected") and not os.path.isdir(usb.SIM_ROOT):
+            shutil.move(usb.SIM_ROOT + "-ejected", usb.SIM_ROOT)
+
     def cancel_job(self):
         j = self.job
         if not j or j["status"] != "running" or not j.get("proc"):
@@ -363,7 +489,8 @@ class App:
         j = self.job
         if not j:
             return {"job": None}
-        return {"job": {k: j[k] for k in ("kind", "title", "status", "started", "code")},
+        return {"job": {k: j.get(k) for k in ("kind", "title", "status", "started", "code",
+                                              "progress")},
                 "log": j["log"][-200:]}
 
     def close(self):
@@ -444,6 +571,15 @@ def make_handler(app):
                 return self._send(200, app.job_state())
             if path == "/setup":
                 return self._file("setup.html")
+            if path == "/scan":
+                return self._file("scan.html")
+            if path == "/scan.js":
+                return self._file("scan.js")
+            if path == "/api/usb":
+                return self._send(200, app.usb_state())
+            if path == "/api/estimate":
+                q = parse_qs(urlparse(self.path).query)
+                return self._send(200, app.estimate((q.get("wells", [""])[0]).split(",")))
             if path == "/setup.js":
                 return self._file("setup.js")
             if path == "/stream.mjpg":
@@ -498,6 +634,15 @@ def make_handler(app):
                     return self._send(200, app.job_state())
             elif path == "/api/job/cancel":
                 err = app.cancel_job()
+            elif path == "/api/usb/eject":
+                err = app.eject()
+                d = app.usb_state()
+                if err:
+                    d["error"] = err
+                return self._send(200, d)
+            elif path == "/api/usb/simplug":
+                app.sim_plug()
+                return self._send(200, app.usb_state())
             else:
                 return self._send(404, {"error": "not found"})
             d = app.state()

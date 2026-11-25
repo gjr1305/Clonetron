@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clonetron · scan</title>
+<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header>
+  <div class="brand"><img src="/favicon.svg" width="24" height="24" alt="">Clonetron</div>
+  <nav>
+    <a href="/">Live</a>
+    <a href="/scan" class="on">Scan</a>
+    <a href="/setup">Setup</a>
+  </nav>
+  <div class="spacer"></div>
+  <span id="sim" class="pill sim" hidden>SIMULATOR</span>
+  <span id="st" class="pill">connecting…</span>
+  <a class="logout" href="/logout">Log out</a>
+</header>
+
+<main>
+  <section class="view">
+    <div class="card" id="progressCard" hidden>
+      <div class="jobhead">
+        <h3 style="margin:0" id="jobTitle">Scan</h3>
+        <span id="jobStatus" class="pill">–</span>
+        <span class="spacer"></span>
+        <button class="danger" id="stopBtn">STOP SCAN</button>
+      </div>
+      <div class="bigbar"><div id="bar"></div></div>
+      <div class="kv wide">
+        <span>Photos</span><span id="pPhotos">–</span>
+        <span>Now on</span><span id="pWell">–</span>
+        <span>Time left</span><span id="pLeft">–</span>
+        <span>Saving to</span><span id="pFolder" class="mono">–</span>
+      </div>
+      <div class="frame"><img id="latest" src="/stream.mjpg" alt="latest photo"></div>
+      <details style="margin-top:10px"><summary class="hint">Show the scan log</summary><pre id="log" class="logbox"></pre></details>
+    </div>
+
+    <div class="card" id="formCard">
+      <h3>New scan</h3>
+      <div class="field">Plate name <input id="name" type="text" maxlength="40" placeholder="e.g. GL261_4Gy_rep2" style="width:260px"></div>
+      <p class="hint">Letters, numbers, - and _ only. It goes into the folder name with the date and time.</p>
+      <h3 style="margin-top:16px">Wells</h3>
+      <div class="plate pick" id="wells"></div>
+      <div class="row" style="margin:8px 0 16px;max-width:320px"><button id="allBtn">All</button><button id="noneBtn">None</button></div>
+      <h3>Focus</h3>
+      <label class="opt"><input type="radio" name="mode" value="map" checked> <b>Focus map + quick check</b> (recommended): uses the saved focus map, checks 5 spots per well and re-shoots blurry photos</label>
+      <label class="opt"><input type="radio" name="mode" value="focus-once"> <b>Focus once</b>: one autofocus per well, no map needed, fastest</label>
+      <label class="opt"><input type="checkbox" id="reshoot" checked> Re-shoot photos that come out blurry</label>
+      <div class="estimate" id="est">–</div>
+      <button class="primary big" id="startBtn" disabled>Start scan</button>
+      <div id="why" class="msg err"></div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="card">
+      <h3>USB stick</h3>
+      <div id="usbBox" class="msg">Checking…</div>
+      <div class="row" style="margin-top:10px">
+        <button id="ejectBtn" hidden>Eject</button>
+        <button id="simPlugBtn" hidden>Plug the pretend stick back in</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Scans on this stick</h3>
+      <div id="recent" class="hint">–</div>
+    </div>
+  </aside>
+</main>
+<script src="/scan.js"></script>
+</body></html>

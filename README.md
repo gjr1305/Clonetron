@@ -75,7 +75,16 @@ Open `http://<IP on the LCD>:8000` in a browser on the same network and log in.
 So far it has live view, X/Y/Z jogging with step sizes, Home, Stop, a live
 sharpness meter, Go to well and Autofocus. The Setup page runs the flat-field
 calibration and makes the focus map, with live progress and a Cancel button.
-Scanning and saving to USB come next.
+The Scan page runs a scan: name the plate, pick wells and the focus mode, and
+press Start. It shows a progress bar, time left and each photo as it is saved,
+and has a Stop button.
+
+**Scans are saved only to a USB stick** plugged into the Pi, in
+`Clonetron/<date>_<time>_<plate name>/`, never to the SD card. The app won't
+start without a stick, checks there's enough space first, and stops cleanly if
+the stick is pulled out or fills up. Press **Eject** before unplugging it. Each
+scan folder also gets copies of the calibration files, so the stick alone is
+enough for analysis on a laptop.
 
 **Try it without the scanner.** On any laptop with Python:
 
@@ -97,7 +106,7 @@ python analysis/stitch_scan.py "path\to\plate_folder"
 ## Roadmap
 
 1. **Repo and settings file** (done)
-2. **Scanner app** (in progress: live view, jogging, focus tools and setup work): browser control from any laptop on the network: live view,
+2. **Scanner app** (in progress: live view, jogging, focus tools, setup and USB scanning work; start-at-boot next): browser control from any laptop on the network: live view,
    jog, focus, scan queue, saving to USB, password protected
 3. **Analysis core:** stitching, well and colony detection, cells per colony,
    measurements table
