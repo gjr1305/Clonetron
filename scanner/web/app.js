@@ -98,3 +98,6 @@ fetch('/api/info').then(r => r.json()).then(info => {
   });
 });
 $('afBtn').onclick = () => { msg('Autofocusing… (20–60 s)'); post('/api/autofocus'); };
+
+// front-panel buttons, pressed from the page
+document.querySelectorAll('[data-b]').forEach(b => b.onclick = () => post('/api/button', {name: b.dataset.b}));

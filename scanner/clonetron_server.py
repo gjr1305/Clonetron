@@ -29,6 +29,7 @@ import shutil
 import signal
 import socketserver
 import subprocess
+import textwrap
 import sys
 import threading
 import time
@@ -43,6 +44,7 @@ sys.path.insert(0, HERE)
 import config  # noqa: E402
 import hw      # noqa: E402
 import lcd     # noqa: E402
+import buttons # noqa: E402
 import usb     # noqa: E402
 
 WEB = os.path.join(HERE, "web")
@@ -143,6 +145,12 @@ class App:
         self.port = int(cfg.get("web_port", 8000))
         self.lcd = lcd.Lcd(enabled=not sim)
         self.lcd_lines = []                                # what the LCD shows, also sent to the page
+        self.lcd_lock = threading.Lock()
+        self.menu_stack = []                               # LCD menus, innermost last
+        self.confirm = None                                # {"title", "question", "yes"}
+        self.flash = None                                  # (lines, show until)
+        self.menu_t = 0.0                                  # last button press
+        self.buttons = buttons.Buttons(self.on_button, enabled=not sim)
         threading.Thread(target=self._preview_loop, daemon=True).start()
         threading.Thread(target=self._lcd_loop, daemon=True).start()
 
@@ -208,7 +216,123 @@ class App:
         ips = os.popen("hostname -I 2>/dev/null").read().split()
         return ips[0] if ips else None
 
+    # -- front-panel buttons and LCD menu
+    MENU_TIMEOUT = 30
+
+    def _main_menu(self):
+        wells = sorted(self.cfg["wells_mm"], key=lambda w: tuple(self.cfg["wells_mm"][w]))
+        return {"title": "MENU", "i": 0, "items": [
+            ("Home stage", lambda: self._do("Homing...", self.home)),
+            ("Go to well  >", {"title": "GO TO WELL", "i": 0, "items": [
+                (w, (lambda w=w: self._do(f"Going to {w}...", lambda: self.goto_well(w))))
+                for w in wells]}),
+            ("Scan whole plate", lambda: self._ask("SCAN", "Scan all 6 wells?", self._button_scan)),
+            ("Eject USB", lambda: self._do("Ejecting USB...", self.eject, "Safe to remove")),
+            ("Show address", lambda: self._show([f"{self.ip() or 'no network'}", f"port {self.port}",
+                                                 "open in a browser"], 8)),
+            ("Shut down Pi", lambda: self._ask("SHUT DOWN", "Turn the Pi off?", self._shutdown)),
+            ("Close menu", lambda: None),
+        ]}
+
+    def on_button(self, name):
+        """A front-panel (or web page) button press."""
+        self.menu_t = time.time()
+        self.flash = None
+        if self.confirm:
+            c, self.confirm = self.confirm, None
+            if name == "CENTRE":
+                threading.Thread(target=c["yes"], daemon=True).start()
+            self._lcd_refresh()
+            return
+        j = self.job or {}
+        if j.get("status") in ("running", "cancelling") and not self.menu_stack:
+            if name == "CENTRE" and j.get("status") == "running":
+                self._ask("STOP", f"Stop {j.get('kind', 'job')}?", self.cancel_job)
+            self._lcd_refresh()
+            return
+        if not self.menu_stack:
+            if name == "CENTRE":
+                self.menu_stack = [self._main_menu()]
+            self._lcd_refresh()
+            return
+        m = self.menu_stack[-1]
+        n = len(m["items"])
+        if name == "UP":
+            m["i"] = (m["i"] - 1) % n
+        elif name == "DOWN":
+            m["i"] = (m["i"] + 1) % n
+        elif name == "LEFT":
+            self.menu_stack.pop()
+        elif name in ("CENTRE", "RIGHT"):
+            label, what = m["items"][m["i"]]
+            if isinstance(what, dict):
+                what["i"] = 0
+                self.menu_stack.append(what)
+            else:
+                self.menu_stack = []
+                what()
+        self._lcd_refresh()
+
+    def _ask(self, title, question, yes):
+        self.menu_stack = []
+        self.confirm = {"title": title, "question": question, "yes": yes}
+
+    def _show(self, lines, secs=4):
+        self.flash = (lines, time.time() + secs)
+        self._lcd_refresh()
+
+    def _do(self, busy_msg, fn, ok_msg="Done"):
+        """Run a stage/USB action in the background and report the result on the LCD."""
+        def work():
+            self._show([busy_msg], 600)
+            err = fn()
+            if err:
+                self._show(["Problem:"] + textwrap.wrap(str(err), 20)[:3], 8)
+            else:
+                self._show([ok_msg], 3)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _button_scan(self):
+        mode = "map" if os.path.exists(MAP_FILE) else "focus-once"
+        err = self.start_job("scan", {"wells": list(self.cfg["scan_order"]), "mode": mode,
+                                      "reshoot": True, "name": "plate"})
+        if err:
+            self._show(["Can't scan:"] + textwrap.wrap(err, 20)[:3], 8)
+
+    def _shutdown(self):
+        self._show(["Shutting down...", "Wait 30 s, then", "it's safe to unplug"], 600)
+        time.sleep(1)
+        for cmd in (["systemctl", "poweroff"], ["sudo", "-n", "/sbin/poweroff"]):
+            if self.sim:
+                print("[simulator] would run:", " ".join(cmd))
+                return
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode == 0:
+                return
+        self._show(["Couldn't shut down:", "run install_service", "again, or use", "sudo poweroff"], 10)
+
+    def _menu_text(self):
+        if self.confirm:
+            c = self.confirm
+            return [c["title"], c["question"], "CENTRE = yes", "LEFT = no"]
+        m = self.menu_stack[-1]
+        items, i = m["items"], m["i"]
+        top = min(max(0, i - 1), max(0, len(items) - 3))
+        rows = [("> " if k == i else "  ") + items[k][0] for k in range(top, min(top + 3, len(items)))]
+        return [m["title"]] + rows
+
+    def _lcd_refresh(self):
+        with self.lcd_lock:
+            self.lcd_lines = self._lcd_text()
+            self.lcd.show(self.lcd_lines)
+
     def _lcd_text(self):
+        if (self.menu_stack or self.confirm) and time.time() - self.menu_t > self.MENU_TIMEOUT:
+            self.menu_stack, self.confirm = [], None
+        if self.flash and time.time() < self.flash[1]:
+            return list(self.flash[0])
+        if self.menu_stack or self.confirm:
+            return self._menu_text()
         j = self.job or {}
         running = j.get("status") in ("running", "cancelling")
         if running and j.get("kind") == "scan":
@@ -254,11 +378,10 @@ class App:
     def _lcd_loop(self):
         while not self.stop_evt.is_set():
             try:
-                self.lcd_lines = self._lcd_text()
-                self.lcd.show(self.lcd_lines)
+                self._lcd_refresh()
             except Exception as e:
                 print("lcd error:", e)
-            self.stop_evt.wait(2)
+            self.stop_evt.wait(1)
 
     # -- status
     def state(self):
@@ -705,6 +828,10 @@ def make_handler(app):
                 if err:
                     d["error"] = err
                 return self._send(200, d)
+            elif path == "/api/button":
+                if b.get("name") in buttons.NAMES:
+                    app.on_button(b["name"])
+                return self._send(200, app.state())
             elif path == "/api/usb/simplug":
                 app.sim_plug()
                 return self._send(200, app.usb_state())

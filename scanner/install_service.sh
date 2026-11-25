@@ -21,7 +21,7 @@ fi
 
 echo "This will:"
 echo "  1. install udisks2 (lets the app open and eject USB sticks), if it isn't already"
-echo "  2. allow user '$ME' to mount and eject USB sticks without a password"
+echo "  2. allow user '$ME' to mount/eject USB sticks and shut down the Pi (LCD menu) without a password"
 echo "  3. create $UNIT so the app starts at boot as '$ME' from $APP_DIR"
 if systemctl list-unit-files 2>/dev/null | grep -q '^colonyscope-lcd.service'; then
     echo "  4. turn OFF the old colonyscope-lcd.service (the app drives the LCD now;"
@@ -48,7 +48,9 @@ polkit.addRule(function(action, subject) {
         (action.id.indexOf("org.freedesktop.udisks2.filesystem-mount") == 0 ||
          action.id.indexOf("org.freedesktop.udisks2.filesystem-unmount") == 0 ||
          action.id.indexOf("org.freedesktop.udisks2.power-off-drive") == 0 ||
-         action.id.indexOf("org.freedesktop.udisks2.eject-media") == 0)) {
+         action.id.indexOf("org.freedesktop.udisks2.eject-media") == 0 ||
+         action.id.indexOf("org.freedesktop.login1.power-off") == 0 ||
+         action.id.indexOf("org.freedesktop.login1.reboot") == 0)) {
         return polkit.Result.YES;
     }
 });
@@ -58,7 +60,7 @@ sudo mkdir -p "$(dirname "$POLKIT_PKLA")"
 sudo tee "$POLKIT_PKLA" >/dev/null <<EOF
 [Clonetron USB sticks]
 Identity=unix-user:$ME
-Action=org.freedesktop.udisks2.filesystem-mount*;org.freedesktop.udisks2.filesystem-unmount*;org.freedesktop.udisks2.power-off-drive*;org.freedesktop.udisks2.eject-media*
+Action=org.freedesktop.udisks2.filesystem-mount*;org.freedesktop.udisks2.filesystem-unmount*;org.freedesktop.udisks2.power-off-drive*;org.freedesktop.udisks2.eject-media*;org.freedesktop.login1.power-off*;org.freedesktop.login1.reboot*
 ResultAny=yes
 ResultInactive=yes
 ResultActive=yes

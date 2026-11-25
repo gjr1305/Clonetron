@@ -33,6 +33,7 @@ scanner/                 runs on the Pi
   web/                   the app's pages
   hw.py, config.py       stage/camera access (and the simulator), settings
   usb.py, lcd.py         USB stick handling, front-panel LCD
+  buttons.py             the five front-panel buttons
   install_service.sh     makes the app start when the Pi boots
   plate_scan.py          focus map, scan, blur check and re-shoot
   live_focus.py          live view, jogging and manual focus checks
@@ -80,6 +81,12 @@ calibration and makes the focus map, with live progress and a Cancel button.
 The Scan page runs a scan: name the plate, pick wells and the focus mode, and
 press Start. It shows a progress bar, time left and each photo as it is saved,
 and has a Stop button.
+
+**Front-panel buttons.** Press CENTRE on the scanner to open the LCD menu
+(UP/DOWN to move, CENTRE to select, LEFT to go back): Home stage, Go to well,
+Scan whole plate, Eject USB, Show address, Shut down Pi. During a scan, CENTRE
+asks whether to stop it. The Live page has the same five buttons. Which pin
+each button is on is learned once and saved in `~/scans/buttons.json`.
 
 **Scans are saved only to a USB stick** plugged into the Pi, in
 `Clonetron/<date>_<time>_<plate name>/`, never to the SD card. The app won't
