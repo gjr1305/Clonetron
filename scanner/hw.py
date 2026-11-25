@@ -42,21 +42,62 @@ def _open_real(cfg):
         def stop(self):
             self.s.write(b"\x85")                 # GRBL jog cancel: stops a jog at once
 
-    print("Connecting to GRBL on", cfg["serial_port"])
-    stage = RealStage(cfg["serial_port"])
+    try:
+        print("Connecting to GRBL on", cfg["serial_port"])
+        stage = RealStage(cfg["serial_port"])
+    except Exception as e:
+        print("Arduino/GRBL not found:", e)
+        stage = MissingStage("Arduino not found: check its USB cable, then restart the app")
 
-    print("Starting camera...")
-    cam = lf.open_camera()
-    cam.configure(cam.create_video_configuration(main={"size": MAIN_SIZE, "format": "RGB888"},
-                                                 controls={"FrameRate": 15}))
-    cam.start()
-    s = lf.load_camera_settings()
-    if s:
-        lf.apply_camera_settings(cam, s)
-        print(f"Colour calibration loaded (exposure {s['ExposureTime'] / 1000:.2f} ms)")
-    else:
-        print("No colour calibration yet: run flatfield_calibrate.py with the plate out.")
+    try:
+        print("Starting camera...")
+        cam = lf.open_camera()
+        cam.configure(cam.create_video_configuration(main={"size": MAIN_SIZE, "format": "RGB888"},
+                                                     controls={"FrameRate": 15}))
+        cam.start()
+        s = lf.load_camera_settings()
+        if s:
+            lf.apply_camera_settings(cam, s)
+            print(f"Colour calibration loaded (exposure {s['ExposureTime'] / 1000:.2f} ms)")
+        else:
+            print("No colour calibration yet: run the flat-field calibration with the plate out.")
+    except Exception as e:
+        print("Camera not found:", e)
+        cam = MissingCamera("Camera not found", "Power off, reseat the camera ribbon at both ends, power on")
     return stage, cam, lf.FlatField()
+
+
+class MissingStage:
+    """Stands in for the Arduino when it can't be opened, so the app still starts
+    and can say what's wrong instead of crashing."""
+    def __init__(self, why):
+        self.why = why
+
+    def pos(self):
+        return "Error: " + self.why, (0.0, 0.0, 0.0)
+
+    def _fail(self, *a, **k):
+        raise RuntimeError(self.why)
+
+    do_home = jog = goto = z_up_to = _fail
+
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class MissingCamera:
+    def __init__(self, title, hint):
+        self.title, self.hint = title, hint
+
+    def capture_array(self, name="main"):
+        time.sleep(0.5)
+        return cv2.resize(placeholder(self.title, self.hint), MAIN_SIZE)
+
+    def stop(self):
+        pass
 
 
 # ---------------------------------------------------------------- simulator

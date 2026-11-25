@@ -234,6 +234,10 @@ class App:
             except Exception:
                 st = "?"
             line3 = "Press Home" if st.startswith("Alarm") else "Ready"
+            if isinstance(self.cam, hw.MissingCamera):
+                line3 = "CAMERA NOT FOUND"
+            elif isinstance(self.stage, hw.MissingStage):
+                line3 = "ARDUINO NOT FOUND"
         stick = None
         try:
             ss = usb.sticks(self.sim)
