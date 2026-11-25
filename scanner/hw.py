@@ -43,8 +43,18 @@ def _open_real(cfg):
             self.s.write(b"\x85")                 # GRBL jog cancel: stops a jog at once
 
         def unlock(self):
+            """Clear GRBL's alarm without homing. Some alarms (a failed homing, a
+            hit limit switch) need a soft reset first, so always reset, then $X."""
             with self.lock:
-                self._send("$X")                   # clear the alarm without homing
+                self.s.write(b"\x18")              # soft reset (Ctrl+X); keeps settings
+                time.sleep(1.5)
+                self.s.reset_input_buffer()
+                self._send("$X")
+                st, _ = self._status(False)
+                print(f"unlock: GRBL now {st}", flush=True)
+                if st.startswith("Alarm"):
+                    raise RuntimeError("GRBL is still locked. Is an endstop switch pressed right now? "
+                                       "Move that axis off its switch by hand (12 V off), then try again")
 
     try:
         print("Connecting to GRBL on", cfg["serial_port"])
