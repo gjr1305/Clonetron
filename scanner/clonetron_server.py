@@ -142,6 +142,7 @@ class App:
         if sim:
             os.makedirs(usb.SIM_ROOT, exist_ok=True)       # a pretend USB stick
         self._latest = (None, 0.0)                         # newest scan photo shown in the preview
+        self.viewers = 0                                   # browsers showing the live picture
         self.port = int(cfg.get("web_port", 8000))
         self.lcd = lcd.Lcd(enabled=not sim)
         self.lcd_lines = []                                # what the LCD shows, also sent to the page
@@ -158,6 +159,10 @@ class App:
     def _preview_loop(self):
         while not self.stop_evt.is_set():
             t = time.time()
+            if self.viewers == 0:                 # nobody is watching: don't spend the Pi's CPU
+                self.sharp = 0.0
+                time.sleep(0.3)
+                continue
             try:
                 if self.cam is None:              # a job has the camera
                     j = self.job or {}
@@ -843,6 +848,13 @@ def make_handler(app):
             self._send(200, d)
 
         def _stream(self):
+            app.viewers += 1
+            try:
+                self._stream_frames()
+            finally:
+                app.viewers -= 1
+
+        def _stream_frames(self):
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=FRAME")
             self.send_header("Cache-Control", "no-store")
