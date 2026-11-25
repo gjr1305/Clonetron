@@ -471,6 +471,10 @@ class App:
     def home(self):
         return self.run("homing", self.stage.do_home)
 
+    def unlock(self):
+        """Allow moving without homing, e.g. to check a motor's direction first."""
+        return self.run("unlocking", self.stage.unlock)
+
     def stop(self):
         self.stage.stop()
 
@@ -815,6 +819,8 @@ def make_handler(app):
                     err = "bad jog"
             elif path == "/api/home":
                 err = app.home()
+            elif path == "/api/unlock":
+                err = app.unlock()
             elif path == "/api/stop":
                 app.stop()
                 err = None

@@ -101,3 +101,5 @@ $('afBtn').onclick = () => { msg('Autofocusing… (20–60 s)'); post('/api/auto
 
 // front-panel buttons, pressed from the page
 document.querySelectorAll('[data-b]').forEach(b => b.onclick = () => post('/api/button', {name: b.dataset.b}));
+
+$('unlockBtn').onclick = () => { msg('Unlocked: use small steps, positions are not known until you Home.'); post('/api/unlock'); };

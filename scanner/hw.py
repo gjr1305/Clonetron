@@ -42,6 +42,10 @@ def _open_real(cfg):
         def stop(self):
             self.s.write(b"\x85")                 # GRBL jog cancel: stops a jog at once
 
+        def unlock(self):
+            with self.lock:
+                self._send("$X")                   # clear the alarm without homing
+
     try:
         print("Connecting to GRBL on", cfg["serial_port"])
         stage = RealStage(cfg["serial_port"])
@@ -79,7 +83,7 @@ class MissingStage:
     def _fail(self, *a, **k):
         raise RuntimeError(self.why)
 
-    do_home = jog = goto = z_up_to = _fail
+    do_home = jog = goto = z_up_to = unlock = _fail
 
     def stop(self):
         pass
@@ -157,6 +161,10 @@ class SimStage:
 
     def stop(self):
         self._cancel.set()
+
+    def unlock(self):
+        if self.state == "Alarm":
+            self.state = "Idle"
 
     def close(self):
         self.state = "Alarm"      # like GRBL resetting when the serial port is reopened
