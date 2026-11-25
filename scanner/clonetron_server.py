@@ -241,6 +241,7 @@ class App:
 
     def on_button(self, name):
         """A front-panel (or web page) button press."""
+        print(f"button {name}", flush=True)
         self.menu_t = time.time()
         self.flash = None
         if self.confirm:
@@ -275,8 +276,10 @@ class App:
                 self.menu_stack.append(what)
             else:
                 self.menu_stack = []
+                print(f"menu: selected '{label}'", flush=True)
                 what()
         self._lcd_refresh()
+        print("lcd: " + " | ".join(x.strip() for x in self.lcd_lines), flush=True)
 
     def _ask(self, title, question, yes):
         self.menu_stack = []
@@ -290,7 +293,9 @@ class App:
         """Run a stage/USB action in the background and report the result on the LCD."""
         def work():
             self._show([busy_msg], 600)
+            print(f"menu action: {busy_msg}", flush=True)
             err = fn()
+            print(f"menu action result: {err or 'ok'}", flush=True)
             if err:
                 self._show(["Problem:"] + textwrap.wrap(str(err), 20)[:3], 8)
             else:
