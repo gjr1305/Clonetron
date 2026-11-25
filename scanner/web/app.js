@@ -42,13 +42,13 @@ function show(d) {
     jb.style.display = running ? 'block' : 'none';
     if (running) jb.innerHTML = `<b>${d.job.title}</b> is running, so the camera and stage are in use. <a href="${d.job.kind === 'scan' ? '/scan' : '/setup'}">See progress</a>`;
   }
-  $('px').textContent = `${Math.abs(d.x).toFixed(2)} ${d.x < 0 ? 'left' : d.x > 0 ? 'right' : ''}`;
-  $('py').textContent = `${Math.abs(d.y).toFixed(2)} ${d.y > 0 ? 'towards' : d.y < 0 ? 'away' : ''}`;
+  $('px').innerHTML = `${Math.abs(d.x).toFixed(2)} <small>${d.x < 0 ? 'left' : d.x > 0 ? 'right' : ''}</small>`;
+  $('py').innerHTML = `${Math.abs(d.y).toFixed(2)} <small>${d.y > 0 ? 'towards you' : d.y < 0 ? 'away' : ''}</small>`;
   $('pz').textContent = d.z.toFixed(3);
   const st = $('st');
   const label = d.busy && d.action ? d.action : d.state;
   st.textContent = label;
-  st.className = 'pill ' + (d.state.startsWith('Error') || d.state === 'Alarm' ? 'bad'
+  st.className = 'chip ' + (d.state.startsWith('Error') || d.state === 'Alarm' ? 'bad'
                             : d.busy ? 'warn' : 'ok');
   $('banner').style.display = d.state === 'Alarm' ? 'block' : 'none';
   $('sim').hidden = !d.sim;
@@ -63,7 +63,7 @@ async function poll() {
     const r = await fetch('/api/state');
     if (r.status === 401) { location.href = '/login'; return; }
     show(await r.json());
-  } catch (e) { $('st').textContent = 'offline'; $('st').className = 'pill bad'; }
+  } catch (e) { $('st').textContent = 'offline'; $('st').className = 'chip bad'; }
 }
 setInterval(poll, 400);
 poll();

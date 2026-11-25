@@ -1,14 +1,28 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clonetron · log in</title>
-<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<title>Clonetron · Log in</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/live.css"></head>
 <body class="login">
-<form id="f">
-  <div class="brand"><img src="/favicon.svg" width="30" height="30" alt="">Clonetron</div>
-  <input id="pw" type="password" placeholder="Password" autocomplete="current-password" autofocus>
-  <button class="primary" type="submit">Log in</button>
-  <div id="m" class="msg err"></div>
+<div class="stage" aria-hidden="true"></div>
+<div class="vignette" aria-hidden="true"></div>
+
+<form class="logincard glass" id="f">
+  <div>
+    <h1>Clonetron</h1>
+    <div class="org">Adelaide University · Future Industries Institute</div>
+  </div>
+  <div class="field">
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password" autofocus>
+  </div>
+  <button class="primary wide" type="submit">Log in</button>
+  <p class="help">Check the plate is seated and the lid is closed before moving the stage.</p>
+  <div id="m" class="msg" role="alert"></div>
 </form>
+
 <script>
 document.getElementById('f').onsubmit = async e => {
   e.preventDefault();

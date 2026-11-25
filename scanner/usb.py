@@ -5,12 +5,14 @@ Scans are only ever saved to a USB stick, never to the Pi's SD card. On the
 Pi, USB sticks show up as /dev/sda1, /dev/sdb1 ... (the SD card is
 /dev/mmcblk0), so anything mounted from /dev/sd* counts as a stick.
 """
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+import zipfile
 
-SCAN_SUBFOLDER = "Clonetron"            # scans go in <stick>/Clonetron/<date>_<name>/
+SCAN_SUBFOLDER = "Clonetron"            # scans go in <stick>/Clonetron/<date>_<name>.clonescan
 SIM_ROOT = os.path.join(tempfile.gettempdir(), "clonetron-sim-usb")
 
 
@@ -102,17 +104,35 @@ def eject(stick, sim=False):
     return None
 
 
+def _manifest(path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            return json.loads(z.read("clonescan.json"))
+    except Exception:
+        return None
+
+
 def recent_scans(stick, n=10):
+    """Newest scans on the stick: .clonescan files, plus any scan still in a folder
+    (one being scanned now, or one whose packing failed)."""
     root = os.path.join(stick["mount"], SCAN_SUBFOLDER)
     if not os.path.isdir(root):
         return []
     out = []
-    for name in sorted(os.listdir(root), reverse=True)[:n]:
+    for name in sorted((x for x in os.listdir(root) if not x.endswith(".part")), reverse=True):
         d = os.path.join(root, name)
-        if os.path.isdir(d):
+        if name.endswith(".clonescan"):
+            m = _manifest(d)
+            out.append({"name": name, "photos": m["photos"] if m else 0, "packed": True,
+                        "complete": bool(m and m.get("complete")), "bad": m is None,
+                        "mb": round(os.path.getsize(d) / 1e6)})
+        elif os.path.isdir(d):
             try:
-                photos = sum(1 for f in os.scandir(d) if f.name.endswith(".jpg") and "_stitched" not in f.name)
+                photos = sum(1 for f in os.scandir(d)
+                             if f.name.endswith(".jpg") and "_stitched" not in f.name)
             except OSError:
                 photos = 0
-            out.append({"name": name, "photos": photos})
+            out.append({"name": name, "photos": photos, "packed": False})
+        if len(out) >= n:
+            break
     return out

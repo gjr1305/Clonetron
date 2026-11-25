@@ -41,7 +41,8 @@ scanner/                 runs on the Pi
   focus_repeat_test.py   checks that autofocus gives the same answer each time
   tile_focus_chart.py    per-photo sharpness chart for a finished scan
 analysis/                runs on a laptop
-  stitch_scan.py         stitches a scan folder into well and plate images
+  clonescan.py           the .clonescan file format (shared with the Pi)
+  stitch_scan.py         stitches a .clonescan file into well and plate images
 config/
   clonetron.example.json machine settings (well positions, focus height, ...)
 portable-test/           checks that a locked-down laptop can run the app
@@ -88,12 +89,20 @@ Scan whole plate, Eject USB, Show address, Shut down Pi. During a scan, CENTRE
 asks whether to stop it. The Live page has the same five buttons. Which pin
 each button is on is learned once and saved in `~/scans/buttons.json`.
 
-**Scans are saved only to a USB stick** plugged into the Pi, in
-`Clonetron/<date>_<time>_<plate name>/`, never to the SD card. The app won't
-start without a stick, checks there's enough space first, and stops cleanly if
-the stick is pulled out or fills up. Press **Eject** before unplugging it. Each
-scan folder also gets copies of the calibration files, so the stick alone is
-enough for analysis on a laptop.
+**Scans are saved only to a USB stick** plugged into the Pi, never to the SD
+card, as one file per plate: `Clonetron/<date>_<time>_<plate name>.clonescan`.
+The file holds the raw photos, where each was taken, the focus data and the
+calibration (including the flat-field image that removes the camera's pink
+corners), so the stick alone is enough for analysis on a laptop. During the
+scan the photos go into a folder; when the scan ends (or is stopped) they are
+packed into the file, the file is checked, and only then is the folder removed.
+For that moment the stick needs room for both, so the app asks for twice the
+scan's size free. It won't start without a stick and stops cleanly if the stick
+is pulled out or fills up. Press **Eject** before unplugging it.
+
+A `.clonescan` file is a plain zip inside, so the photos can always be got out
+without the app: `python analysis/clonescan.py extract FILE.clonescan`
+(or `info` to see what's in it).
 
 **Start it at boot.** Once it works, run this once on the Pi:
 
@@ -120,8 +129,12 @@ that is only sharp near Z = 19.6 mm, so the focus meter can be tried too.
 
 ```bash
 pip install numpy opencv-python
-python analysis/stitch_scan.py "path\to\plate_folder"
+python analysis/stitch_scan.py "E:\Clonetron\2026-11-26_101500_GL261_4Gy.clonescan"
 ```
+
+The pink corners are removed and the photos lined up; the stitched pictures go
+in a `<scan name> results` folder next to the file. The `.clonescan` file is
+never changed. Older scans saved as folders still work.
 
 ## Roadmap
 

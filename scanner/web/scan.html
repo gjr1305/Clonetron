@@ -1,72 +1,78 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clonetron · scan</title>
-<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<title>Clonetron · Scan</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/live.css"></head>
 <body>
-<header>
-  <div class="brand"><img src="/favicon.svg" width="24" height="24" alt="">Clonetron</div>
-  <nav>
-    <a href="/">Live</a>
-    <a href="/scan" class="on">Scan</a>
-    <a href="/setup">Setup</a>
-  </nav>
-  <div class="spacer"></div>
-  <span id="sim" class="pill sim" hidden>SIMULATOR</span>
-  <span id="st" class="pill">connecting…</span>
-  <a class="logout" href="/logout">Log out</a>
-</header>
 
-<main>
-  <section class="view">
-    <div class="card" id="progressCard" hidden>
-      <div class="jobhead">
-        <h3 style="margin:0" id="jobTitle">Scan</h3>
-        <span id="jobStatus" class="pill">–</span>
-        <span class="spacer"></span>
-        <button class="danger" id="stopBtn">STOP SCAN</button>
-      </div>
-      <div class="bigbar"><div id="bar"></div></div>
-      <div class="kv wide">
-        <span>Photos</span><span id="pPhotos">–</span>
-        <span>Now on</span><span id="pWell">–</span>
-        <span>Time left</span><span id="pLeft">–</span>
-        <span>Saving to</span><span id="pFolder" class="mono">–</span>
-      </div>
-      <div class="frame"><img id="latest" src="/stream.mjpg" alt="latest photo"></div>
-      <details style="margin-top:10px"><summary class="hint">Show the scan log</summary><pre id="log" class="logbox"></pre></details>
-    </div>
+<!-- live view when idle; the newest saved photo while scanning -->
+<div class="stage"><img id="latest" src="/stream.mjpg" alt="Camera view or the latest scan photo"></div>
+<div class="vignette" aria-hidden="true"></div>
 
-    <div class="card" id="formCard">
-      <h3>New scan</h3>
-      <div class="field">Plate name <input id="name" type="text" maxlength="40" placeholder="e.g. GL261_4Gy_rep2" style="width:260px"></div>
-      <p class="hint">Letters, numbers, - and _ only. It goes into the folder name with the date and time.</p>
-      <h3 style="margin-top:16px">Wells</h3>
-      <div class="plate pick" id="wells"></div>
-      <div class="row" style="margin:8px 0 16px;max-width:320px"><button id="allBtn">All</button><button id="noneBtn">None</button></div>
-      <h3>Focus</h3>
-      <label class="opt"><input type="radio" name="mode" value="map" checked> <b>Focus map + quick check</b> (recommended): uses the saved focus map, checks 5 spots per well and re-shoots blurry photos</label>
-      <label class="opt"><input type="radio" name="mode" value="focus-once"> <b>Focus once</b>: one autofocus per well, no map needed, fastest</label>
-      <label class="opt"><input type="checkbox" id="reshoot" checked> Re-shoot photos that come out blurry</label>
-      <div class="estimate" id="est">–</div>
-      <button class="primary big" id="startBtn" disabled>Start scan</button>
-      <div id="why" class="msg err"></div>
-    </div>
-  </section>
+<div class="topbar glass">
+  <div class="brand"><b>Adelaide University</b><span>Clonetron</span></div>
+  <nav><a href="/">Live</a><a href="/scan" class="on">Scan</a><a href="/setup">Setup</a></nav>
+</div>
+<div class="topright">
+  <span id="sim" class="chip sim" hidden>Simulator</span>
+  <span id="st" class="chip">connecting…</span>
+  <a class="chip ghost" href="/logout">Log out</a>
+</div>
 
-  <aside class="side">
-    <div class="card">
-      <h3>USB stick</h3>
-      <div id="usbBox" class="msg">Checking…</div>
-      <div class="row" style="margin-top:10px">
-        <button id="ejectBtn" hidden>Eject</button>
-        <button id="simPlugBtn" hidden>Plug the pretend stick back in</button>
-      </div>
+<!-- left: plate + USB -->
+<aside class="dock left glass">
+  <div class="dockhead"><h2>Plate</h2><span class="sub" id="plateSub">Click wells to include them</span></div>
+  <svg id="platemap" class="platemap" role="group" aria-label="Wells to scan"></svg>
+  <div class="row" id="pickRow"><button id="allBtn">All wells</button><button id="noneBtn">Clear</button></div>
+
+  <div class="section">
+    <div class="dockhead"><h2>USB stick</h2></div>
+    <div id="usbBox" class="help">Checking…</div>
+    <div class="row"><button id="ejectBtn" hidden>Eject</button><button id="simPlugBtn" hidden>Plug pretend stick in</button></div>
+    <details class="logdrawer"><summary>Scans on this stick</summary><div id="recent" class="help" style="margin-top:6px">–</div></details>
+  </div>
+</aside>
+
+<!-- right: new scan form / progress -->
+<aside class="dock right glass" id="formCard">
+  <div class="dockhead"><h2>New scan</h2><span class="sub">Saved to the USB stick only</span></div>
+  <div class="field">
+    <label for="name">Plate name</label>
+    <input id="name" type="text" maxlength="40" placeholder="GL261_4Gy_rep2" autocomplete="off">
+    <p class="help">Letters, numbers, - and _. The scan is saved as one file named with the date, time and this name.</p>
+  </div>
+  <div class="field">
+    <span class="lbl">Focus</span>
+    <div class="seg two" id="modeSeg">
+      <button data-m="map" class="on">Focus map</button>
+      <button data-m="focus-once">Focus once</button>
     </div>
-    <div class="card">
-      <h3>Scans on this stick</h3>
-      <div id="recent" class="hint">–</div>
-    </div>
-  </aside>
-</main>
+    <p class="help" id="modeHelp">Uses the saved focus map, checks 5 spots per well.</p>
+  </div>
+  <label class="toggle">Re-shoot blurry photos <input type="checkbox" id="reshoot" checked></label>
+  <div class="est" id="est">–</div>
+  <button class="primary wide" id="startBtn" disabled>Start scan</button>
+  <div class="why" id="why"></div>
+</aside>
+
+<aside class="dock right glass" id="progressCard" hidden>
+  <div class="dockhead"><h2 id="jobTitle">Scanning</h2><span class="sub" id="jobStarted"></span></div>
+  <div class="bigpct" id="pct">0<small>%</small></div>
+  <div class="pbar"><div id="bar"></div></div>
+  <div class="kv">
+    <span>Well</span><span id="pWell">–</span>
+    <span>Photos</span><span id="pPhotos">–</span>
+    <span>Time left</span><span id="pLeft">–</span>
+    <span>Status</span><span id="jobStatus">–</span>
+  </div>
+  <p class="help mono" id="pFolder" style="word-break:break-all"></p>
+  <button class="stop" id="stopBtn">Stop scan</button>
+  <button class="wide" id="newBtn" hidden>New scan</button>
+  <details class="logdrawer"><summary>Scan log</summary><pre id="log" class="logbox"></pre></details>
+</aside>
+
+<script src="/plate.js"></script>
 <script src="/scan.js"></script>
 </body></html>

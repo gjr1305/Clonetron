@@ -2,7 +2,8 @@
 """
 ColonyScope stitcher: runs on the laptop (or the Pi) after a scan.
 
-  python stitch_scan.py "C:\\My Documents\\Incubot\\scans\\plate_2026-11-24_110000"
+  python stitch_scan.py "E:\\Clonetron\\2026-11-26_101500_GL261_4Gy.clonescan"
+  python stitch_scan.py "C:\\My Documents\\Incubot\\scans\\plate_2026-11-24_110000"   (old folder scans)
   python stitch_scan.py FOLDER1 FOLDER2 ...        several scans in one go
   python stitch_scan.py "C:\\My Documents\\Incubot\\scans" --all
                                                               every scan in there not stitched yet
@@ -15,17 +16,19 @@ Options:
 Needs Python 3 with numpy and opencv:
   pip install numpy opencv-python
 
-Uses only files inside the scan folder: positions.csv, the photos,
-calibration.json, flat.npy and scan_info.json (v14 scans copy these in). For an
-older scan, put calibration.json and flat.npy into the folder first.
+Everything it needs is inside the .clonescan file (or the scan folder:
+positions.csv, the photos, calibration.json, flat.npy and scan_info.json).
+The .clonescan file itself is never changed: stitched pictures go into a
+"<scan name> results" folder next to it.
 
 It also measures where each well's rim really is and writes
-well_offsets_suggested.json into the scan folder. Copy that to the Pi as
+well_offsets_suggested.json next to the stitched pictures. Copy that to the Pi as
 ~/scans/well_offsets.json and the next scans are centred on the wells and take
 fewer photos (scan v14 uses it automatically).
 """
 import argparse
 import csv
+import io
 import json
 import math
 import os
@@ -34,6 +37,9 @@ import time
 
 import cv2
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from clonescan import Scan, find_scans  # noqa: E402
 
 BG_LEVEL = 225.0
 WELL_RADIUS = 17.4
@@ -46,8 +52,8 @@ REG_MAX_SHIFT = 80
 
 # ---------------------------------------------------------------- flat-field
 class FlatField:
-    def __init__(self, path):
-        self.flat = np.load(path).astype(np.float32) if os.path.exists(path) else None
+    def __init__(self, flat):
+        self.flat = None if flat is None else flat.astype(np.float32)
         self._gain = {}
 
     def apply(self, img):
@@ -70,15 +76,15 @@ def tile_offsets(tiles, M):
     return np.array([-(M @ np.array([x - x0, y - y0])) for _, x, y in tiles], dtype=float)
 
 
-def refine_offsets(tiles, P, w, h, flat):
+def refine_offsets(tiles, P, w, h, flat, read):
     """Line up neighbouring photos by the cells in their overlap."""
     n = len(tiles)
     if n < 2:
         return P
     sw, sh = int(w * REG_SCALE), int(h * REG_SCALE)
     small = []
-    for path, _, _ in tiles:
-        img = cv2.imread(path)
+    for name, _, _ in tiles:
+        img = read(name)
         small.append(None if img is None else
                      cv2.resize(flat.apply(img)[..., 1], (sw, sh), interpolation=cv2.INTER_AREA))
     pairs = []
@@ -137,7 +143,7 @@ def _feather(tw, th, ramp):
     return np.clip(np.minimum.outer(y, x) / max(ramp, 1.0), 0.0, 1.0)[..., None]
 
 
-def render(tiles, offs, w, h, max_side, flat):
+def render(tiles, offs, w, h, max_side, flat, read):
     """Returns (canvas, scale, mn) before any rotation."""
     mn = offs.min(axis=0)
     W, H = offs[:, 0].max() - mn[0] + w, offs[:, 1].max() - mn[1] + h
@@ -146,8 +152,8 @@ def render(tiles, offs, w, h, max_side, flat):
     canvas = np.zeros((int(H * sc) + th + 2, int(W * sc) + tw + 2, 3), np.uint8)
     filled = np.zeros(canvas.shape[:2], np.uint8)
     feather = _feather(tw, th, 0.06 * min(tw, th))
-    for (path, _, _), o in zip(tiles, offs):
-        img = cv2.imread(path)
+    for (name, _, _), o in zip(tiles, offs):
+        img = read(name)
         if img is None:
             continue
         img = cv2.resize(flat.apply(img), (tw, th), interpolation=cv2.INTER_AREA)
@@ -197,31 +203,35 @@ def well_offset(canvas, sc, mn, tiles, Q, M, w, h, centre):
 
 
 # ---------------------------------------------------------------- one scan folder
-def stitch_folder(folder, a):
-    pos = os.path.join(folder, "positions.csv")
-    cal = os.path.join(folder, "calibration.json")
-    if not os.path.exists(pos):
-        print(f"{folder}: no positions.csv, skipped")
+def stitch_folder(path, a):
+    """Stitch one scan: a .clonescan file or an unpacked scan folder."""
+    try:
+        scan = Scan(path)
+    except ValueError as e:
+        print(e)
         return
-    if not os.path.exists(cal):
-        print(f"{folder}: no calibration.json in the folder. Copy it from the Pi "
-              f"(~/scans/calibration.json) into the folder and run again.")
+    if not scan.has("positions.csv"):
+        print(f"{scan.name}: no positions.csv, skipped")
         return
-    with open(cal) as f:
-        calib = json.load(f)
-    info = {}
-    if os.path.exists(os.path.join(folder, "scan_info.json")):
-        with open(os.path.join(folder, "scan_info.json")) as f:
-            info = json.load(f)
+    if not scan.has("calibration.json"):
+        print(f"{scan.name}: no calibration.json in the scan. Copy ~/scans/calibration.json "
+              f"from the Pi into the folder and run again.")
+        return
+    calib = scan.read_json("calibration.json")
+    info = scan.read_json("scan_info.json", {})
     rot = a.rotate if a.rotate is not None else info.get("rotate", 180)
-    flat = FlatField(os.path.join(folder, "flat.npy"))
-    with open(pos) as f:
-        rows = list(csv.DictReader(f))
+    flat = FlatField(scan.load_npy("flat.npy"))
+    rows = list(csv.DictReader(io.StringIO(scan.read_text("positions.csv"))))
     wells = list(dict.fromkeys(r["well"] for r in rows))
-    print(f"\n{os.path.basename(folder)}: {len(rows)} photos, wells {', '.join(wells)}"
+    folder = scan.results_folder()
+    read = scan.read_image
+    print(f"\n{scan.name}: {len(rows)} photos, wells {', '.join(wells)}"
+          + ("" if scan.manifest.get("complete", True) else "  (scan was stopped early)")
           + ("" if flat.flat is not None else "  (no flat.npy: no white-background correction)"))
+    if scan.zip is not None:
+        print(f" results go in: {folder}")
     t0 = time.time()
-    first = cv2.imread(os.path.join(folder, rows[0]["file"]))
+    first = read(rows[0]["file"])
     h, w = first.shape[:2]
     M = scaled_M(calib, w)
     all_tiles, all_offs, ref = [], [], None
@@ -230,13 +240,13 @@ def stitch_folder(folder, a):
     centres = info.get("well_centres_machine_mm", {})
     for wl in wells:
         out = os.path.join(folder, f"{wl}_stitched.jpg")
-        tiles = [(os.path.join(folder, r["file"]), float(r["machine_x_mm"]),
+        tiles = [(r["file"], float(r["machine_x_mm"]),
                   float(r["machine_y_mm"])) for r in rows if r["well"] == wl]
         print(f" {wl}: {len(tiles)} photos")
         P = tile_offsets(tiles, M)
-        Q = refine_offsets(tiles, P, w, h, flat) if not a.no_align else P
+        Q = refine_offsets(tiles, P, w, h, flat, read) if not a.no_align else P
         if a.redo or not os.path.exists(out):
-            canvas, sc, mn = render(tiles, Q, w, h, WELL_MAX, flat)
+            canvas, sc, mn = render(tiles, Q, w, h, WELL_MAX, flat, read)
             cv2.imwrite(out, rotate(canvas, rot), [cv2.IMWRITE_JPEG_QUALITY, 92])
             print(f"   saved {os.path.basename(out)}")
             centre = centres.get(wl)
@@ -266,7 +276,7 @@ def stitch_folder(folder, a):
     if len(wells) > 1 and not a.no_plate:
         out = os.path.join(folder, "plate_stitched.jpg")
         if a.redo or not os.path.exists(out):
-            canvas, _, _ = render(all_tiles, np.vstack(all_offs), w, h, PLATE_MAX, flat)
+            canvas, _, _ = render(all_tiles, np.vstack(all_offs), w, h, PLATE_MAX, flat, read)
             cv2.imwrite(out, rotate(canvas, rot), [cv2.IMWRITE_JPEG_QUALITY, 92])
             print(" saved plate_stitched.jpg")
     if suggested:
@@ -283,7 +293,7 @@ def stitch_folder(folder, a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("folders", nargs="+")
+    ap.add_argument("folders", nargs="+", help=".clonescan files or scan folders")
     ap.add_argument("--all", action="store_true", help="folder holds many scans: do each one")
     ap.add_argument("--no-align", action="store_true")
     ap.add_argument("--no-plate", action="store_true")
@@ -294,12 +304,11 @@ def main():
     for f in a.folders:
         f = os.path.expanduser(f.rstrip("/\\"))
         if a.all:
-            folders += sorted(os.path.join(f, d) for d in os.listdir(f)
-                              if os.path.exists(os.path.join(f, d, "positions.csv")))
+            folders += find_scans(f)
         else:
             folders.append(f)
     if not folders:
-        sys.exit("No scan folders found.")
+        sys.exit("No scans found.")
     for f in folders:
         stitch_folder(f, a)
 

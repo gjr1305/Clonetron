@@ -1,90 +1,102 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clonetron</title>
-<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<title>Clonetron · Live</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/live.css"></head>
 <body>
-<header>
-  <div class="brand"><img src="/favicon.svg" width="24" height="24" alt="">Clonetron</div>
+
+<!-- the live picture fills the screen; everything else floats over it -->
+<div class="stage" id="frame">
+  <img id="live" src="/stream.mjpg" alt="Live camera view">
+  <div class="reticle" aria-hidden="true"></div>
+  <div class="scalebar" id="scalebar"><div class="bar"></div><span>500 µm</span></div>
+</div>
+<div class="vignette" aria-hidden="true"></div>
+
+<!-- top -->
+<div class="topbar glass">
+  <div class="brand"><b>Adelaide University</b><span>Clonetron</span></div>
   <nav>
     <a href="/" class="on">Live</a>
     <a href="/scan">Scan</a>
     <a href="/setup">Setup</a>
   </nav>
-  <div class="spacer"></div>
-  <span id="sim" class="pill sim" hidden>SIMULATOR</span>
-  <span id="st" class="pill">connecting…</span>
-  <a class="logout" href="/logout">Log out</a>
-</header>
+</div>
+<div class="topright">
+  <span id="sim" class="chip sim" hidden>Simulator</span>
+  <span id="st" class="chip">connecting…</span>
+  <a class="chip ghost" href="/logout">Log out</a>
+</div>
 
-<main>
-  <section class="view">
-    <div id="jobbanner" class="banner"></div>
-    <div id="banner" class="banner">The stage hasn't been homed since the scanner started. Press <b>Home</b> before moving.
-      <button id="unlockBtn" style="margin-left:10px">Move without homing</button>
-      <span class="hint">(only for small test moves: positions aren't known yet)</span></div>
-    <div class="frame cross" id="frame"><img id="live" src="/stream.mjpg" alt="live camera"></div>
-    <div class="under">
-      <span class="hint">Sharpness</span>
-      <div class="sharpbar"><div id="sbar"></div></div>
-      <span class="sharpnum" id="snum">–</span>
-    </div>
-  </section>
+<div class="toasts">
+  <div id="jobbanner" class="toast"></div>
+  <div id="banner" class="toast">
+    <span>Stage not homed since start-up. Home it before moving.</span>
+    <button id="unlockBtn" class="ghostbtn">Move without homing</button>
+  </div>
+</div>
 
-  <aside class="side">
-    <div class="card">
-      <h3>Position (mm from home)</h3>
-      <div class="pos">
-        <span>X</span><span id="px">–</span>
-        <span>Y</span><span id="py">–</span>
-        <span>Z</span><span id="pz">–</span>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Go to well</h3>
-      <div class="plate" id="plate"></div>
-      <div class="row" style="margin-top:10px"><button class="primary" id="afBtn">Autofocus here</button></div>
-    </div>
-
-    <div class="card">
-      <h3>Step size</h3>
-      <div class="steps" id="steps">
-        <button data-s="0.01">0.01</button><button data-s="0.02">0.02</button><button data-s="0.05">0.05</button>
-        <button data-s="0.1">0.1</button><button data-s="1" class="on">1</button>
-        <button data-s="5">5</button><button data-s="10">10</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Move</h3>
-      <div class="pad">
-        <span></span><button data-j="Y,-1" title="W">&#9650;</button><span></span>
-        <button data-j="X,-1" title="A">&#9664;</button><button id="homeBtn" title="H">&#8962;</button><button data-j="X,1" title="D">&#9654;</button>
-        <span></span><button data-j="Y,1" title="S">&#9660;</button><span></span>
-      </div>
-      <div class="zrow">
-        <button data-j="Z,1" title="R">Z up</button>
-        <button data-j="Z,-1" title="F">Z down</button>
-      </div>
-      <div class="zrow">
-        <button class="danger" id="stopBtn" title="Space">STOP</button>
-      </div>
-      <p class="hint">Keys (click the picture first): <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move,
-        <kbd>R</kbd>/<kbd>F</kbd> focus, <kbd>H</kbd> home, <kbd>Space</kbd> stop,
-        <kbd>[</kbd>/<kbd>]</kbd> smaller/bigger step.</p>
-      <div id="msg" class="msg"></div>
-    </div>
-    <div class="card">
-      <h3>Front panel</h3>
+<!-- left: plate map -->
+<aside class="dock left glass">
+  <div class="dockhead"><h2>Plate</h2><span class="sub">Click a well to go there</span></div>
+  <svg id="platemap" class="platemap" role="img" aria-label="Plate map showing the objective position"></svg>
+  <button class="primary wide" id="afBtn">Autofocus here</button>
+  <div class="frontpanel">
+    <button class="fpToggle" id="fpToggle" aria-expanded="false">Front panel</button>
+    <div class="fpBody" id="fpBody" hidden>
       <pre class="lcdview" id="lcd">                    </pre>
       <div class="panelbtns">
-        <span></span><button data-b="UP" title="UP">&#9650;</button><span></span>
-        <button data-b="LEFT" title="LEFT / back">&#9664;</button><button data-b="CENTRE" title="CENTRE / select">&#9679;</button><button data-b="RIGHT" title="RIGHT">&#9654;</button>
-        <span></span><button data-b="DOWN" title="DOWN">&#9660;</button><span></span>
+        <span></span><button data-b="UP" aria-label="Up">▲</button><span></span>
+        <button data-b="LEFT" aria-label="Left / back">◀</button><button data-b="CENTRE" aria-label="Centre / select">●</button><button data-b="RIGHT" aria-label="Right">▶</button>
+        <span></span><button data-b="DOWN" aria-label="Down">▼</button><span></span>
       </div>
-      <p class="hint">Same as the buttons on the scanner: CENTRE opens the menu.</p>
     </div>
-  </aside>
-</main>
+  </div>
+</aside>
+
+<!-- right: motion -->
+<aside class="dock right glass">
+  <div class="dockhead"><h2>Move</h2><span class="sub">Step size, mm</span></div>
+  <div class="seg" id="steps">
+    <button data-s="0.01">.01</button><button data-s="0.02">.02</button><button data-s="0.05">.05</button>
+    <button data-s="0.1">.1</button><button data-s="1" class="on">1</button><button data-s="5">5</button><button data-s="10">10</button>
+  </div>
+
+  <div class="motion">
+    <div class="dial">
+      <button class="d up" data-j="Y,-1" aria-label="Move away (W)">▲</button>
+      <button class="d left" data-j="X,-1" aria-label="Move left (A)">◀</button>
+      <button class="d right" data-j="X,1" aria-label="Move right (D)">▶</button>
+      <button class="d down" data-j="Y,1" aria-label="Move towards you (S)">▼</button>
+      <button class="hub" id="homeBtn" aria-label="Home all axes (H)">Home</button>
+    </div>
+    <div class="zrocker">
+      <button data-j="Z,1" aria-label="Focus up (R)">▲</button>
+      <span>Z</span>
+      <button data-j="Z,-1" aria-label="Focus down (F)">▼</button>
+    </div>
+  </div>
+
+  <button class="stop" id="stopBtn" aria-label="Stop movement (Space)">Stop</button>
+  <p class="keys">Keys: W A S D move, R F focus, H home, Space stop, [ ] step size</p>
+  <div id="msg" class="msg" role="status"></div>
+</aside>
+
+<!-- bottom: readouts -->
+<div class="hud glass">
+  <div class="axis"><i>X</i><b id="px">–</b></div>
+  <div class="axis"><i>Y</i><b id="py">–</b></div>
+  <div class="axis"><i>Z</i><b id="pz">–</b></div>
+  <div class="sharp">
+    <i>Focus</i>
+    <div class="sharpbar"><div id="sbar"></div></div>
+    <b id="snum">–</b>
+  </div>
+</div>
+
 <script src="/app.js"></script>
+<script src="/plate.js"></script>
+<script src="/live.js"></script>
 </body></html>

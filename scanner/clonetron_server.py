@@ -545,6 +545,7 @@ class App:
             wells = [w for w in opts.get("wells", []) if w in self.cfg["wells_mm"]]
             if wells:
                 argv += ["--wells", ",".join(wells)]
+        scan_wells = []
         if kind == "scan":
             err, extra = self._scan_args(opts)
             if err:
@@ -552,13 +553,15 @@ class App:
                 return err
             argv = argv + extra
             title = "Scanning " + (opts.get("name") or "plate")
+            scan_wells = extra[extra.index("--wells") + 1].split(",")
         if self.sim:
             argv = ["sim_job.py", kind] + (argv[1:] if kind == "scan" else [])
         self.action = title
         self.job = {"kind": kind, "title": title, "status": "running", "log": [],
                     "started": time.strftime("%H:%M:%S"), "proc": None, "code": None,
                     "progress": {"taken": 0, "total": None, "well": None, "left_min": None,
-                                 "folder": None} if kind == "scan" else None}
+                                 "folder": None, "file": None, "packing": False,
+                                 "wells": scan_wells if kind == "scan" else []} if kind == "scan" else None}
         threading.Thread(target=self._run_job, args=(argv,), daemon=True).start()
         return None
 
@@ -615,6 +618,12 @@ class App:
             p["left_min"] = float(m[4])
         elif line.startswith("SCAN_FOLDER: "):
             p["folder"] = line[len("SCAN_FOLDER: "):].strip()
+        elif line == "PACKING":
+            p["packing"], p["well"] = True, None
+        elif line.startswith("SCAN_FILE: "):
+            p["file"], p["packing"] = line[len("SCAN_FILE: "):].strip(), False
+        elif p.get("packing") and (m3 := re.match(r"\s*packed (\d+)/(\d+)", line)):
+            p["packed"] = [int(m3[1]), int(m3[2])]
         elif re.fullmatch(r"[A-Z]{2}:", line.strip()):
             p["well"] = line.strip()[:-1]
         elif "photos per well" in line:
@@ -624,7 +633,10 @@ class App:
 
     def estimate(self, wells):
         n = len([w for w in wells if w in self.cfg["wells_mm"]])
-        return {"photos": n * PHOTOS_PER_WELL, "mb": round(n * PHOTOS_PER_WELL * MB_PER_PHOTO),
+        mb = round(n * PHOTOS_PER_WELL * MB_PER_PHOTO)
+        # the photos sit in a folder until the scan ends and are then packed into one
+        # .clonescan file, so for a moment the stick holds both: twice the space
+        return {"photos": n * PHOTOS_PER_WELL, "mb": mb, "mb_needed": 2 * mb,
                 "minutes": round(n * MIN_PER_WELL + 1)}
 
     def _scan_args(self, opts):
@@ -638,7 +650,7 @@ class App:
             return "plug in a USB stick: scans are only saved to USB", None
         if not stick["writable"]:
             return f"can't write to the USB stick {stick['label']} (is it write-protected?)", None
-        need = self.estimate(wells)["mb"] * 1e6
+        need = self.estimate(wells)["mb_needed"] * 1e6
         if stick["free"] < need:
             return (f"not enough space on {stick['label']}: needs about {need / 1e9:.1f} GB, "
                     f"has {stick['free'] / 1e9:.1f} GB free"), None
@@ -681,9 +693,18 @@ class App:
         j = self.job
         if not j or j["status"] != "running" or not j.get("proc"):
             return "no job is running"
+        if (j.get("progress") or {}).get("packing"):
+            return "the photos are being packed into one file; it finishes in a minute or two"
         j["status"] = "cancelling"
         j["proc"].send_signal(signal.SIGINT)       # the scripts stop the stage cleanly on Ctrl+C
-        threading.Timer(30, lambda p=j["proc"]: p and p.poll() is None and p.kill()).start()
+
+        def force_stop(p=j["proc"], prog=j.get("progress") or {}):
+            # a stopped scan still packs what it took; never kill it while it does that
+            while p.poll() is None and prog.get("packing"):
+                time.sleep(2)
+            if p.poll() is None:
+                p.kill()
+        threading.Timer(30, force_stop).start()
         return None
 
     def job_state(self):
@@ -755,7 +776,7 @@ def make_handler(app):
             path = urlparse(self.path).path
             if path in ("/login", "/login.html"):
                 return self._file("login.html")
-            if path in ("/style.css", "/favicon.svg"):
+            if path in ("/style.css", "/favicon.svg", "/live.css"):
                 return self._file(path[1:])
             if not self._authed():
                 if path.startswith("/api") or path.endswith(".mjpg"):
@@ -763,7 +784,7 @@ def make_handler(app):
                 return self._send(302, "", "text/plain", [("Location", "/login")])
             if path == "/":
                 return self._file("index.html")
-            if path in ("/app.js",):
+            if path in ("/app.js", "/live.js", "/plate.js"):
                 return self._file(path[1:])
             if path == "/api/state":
                 return self._send(200, app.state())

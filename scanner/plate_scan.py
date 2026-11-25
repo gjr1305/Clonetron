@@ -33,8 +33,9 @@ Other options:
   --radius 19         mm around each well centre to photograph (default 19)
 Ctrl+C stops the scan and still stitches the photos taken so far.
 
-Output: ~/scans/plate_<date>_<time>/  (same as before)
-  BL_0000.jpg ...  positions.csv  focus.csv  BL_stitched.jpg ...  plate_stitched.jpg
+Output: one file, <out>/<date>_<time>_<name>.clonescan (see analysis/clonescan.py).
+  The photos go into a folder first and are packed into the file when the scan
+  ends (also when it is stopped early). --keep-folder leaves them as a folder.
 
 Why it is faster than v7: v7 spent most of its time focusing (5 full focus
 searches per well plus a re-focus every 5 photos). v8 does that work once in
@@ -99,6 +100,7 @@ import math
 import os
 import queue
 import re
+import signal
 import sys
 import threading
 import time
@@ -107,6 +109,9 @@ import cv2
 import numpy as np
 import serial
 from picamera2 import Picamera2
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "analysis"))
+import clonescan  # noqa: E402  (shared with the laptop app: the .clonescan file format)
 
 
 # ---------------------------------------------------------------- ColonyScope colour setup
@@ -1044,6 +1049,7 @@ def scan(a, wells, size):
     zmin, zmax = hz + max(0.5, a.z - 3), hz + Z_LIMIT
     writer = Writer()
     save_error = None
+    finished = False
     taken, offset = 0, 0.0
     z_fixed = hz + a.z                         # height used when there is no map
     t_focus, t_photos, t_stitch = 0.0, 0.0, 0.0
@@ -1189,6 +1195,7 @@ def scan(a, wells, size):
         fcsv.close()
         t_photos = time.time() - t0
         print(f"\nScan done: {taken} photos in {t_photos / 60:.1f} min")
+        finished = True
         send(s, f"G53 G0 X{hx:.3f} Y{hy:.3f}")
         position(s)
     except KeyboardInterrupt:
@@ -1215,6 +1222,21 @@ def scan(a, wells, size):
         ts = time.time()
         stitch_folder(folder, calib, align=not a.no_align, rotate=a.rotate)
         t_stitch = time.time() - ts
+    t_pack = time.time()
+    result = folder
+    if taken and not a.keep_folder:
+        print("PACKING", flush=True)
+        old = signal.signal(signal.SIGINT, signal.SIG_IGN)   # a Stop now would only spoil the file
+        try:
+            result = clonescan.pack(folder, complete=finished,
+                                    log=lambda m: print(m, flush=True))
+            print(f"SCAN_FILE: {result}", flush=True)
+        except OSError as e:
+            print(f"Couldn't pack the scan into one file ({e}). "
+                  f"The photos are safe in {folder}", flush=True)
+        finally:
+            signal.signal(signal.SIGINT, old)
+    t_pack = time.time() - t_pack
     print("\nTime taken:")
     print(f"  homing + camera start  {t_home / 60:5.1f} min")
     if a.focus_once:
@@ -1223,17 +1245,19 @@ def scan(a, wells, size):
           f"{t_photos / max(taken, 1):.2f} s each)")
     if a.stitch:
         print(f"  stitching              {t_stitch / 60:5.1f} min")
+    if result != folder:
+        print(f"  packing into one file  {t_pack / 60:5.1f} min")
     print(f"  TOTAL                  {(time.time() - T0) / 60:5.1f} min")
-    print(f"\nEverything is in {folder}")
+    print(f"\nEverything is in {result}")
     if a.out:
         print("It's on the USB stick: press Eject in the app, then plug the stick into the laptop.")
     else:
         print("Copy to the laptop (in Windows PowerShell):")
         ip = (os.popen("hostname -I").read().split() or ["<Pi IP>"])[0]
-        print(f'  scp -r geofreyjohn@{ip}:~/scans/{os.path.basename(folder)} '
+        print(f'  scp -r geofreyjohn@{ip}:~/scans/{os.path.basename(result)} '
               f'"C:\\My Documents\\Incubot\\scans"')
     if not a.stitch:
-        print("Then stitch it on the laptop:  python analysis\\stitch_scan.py <scan folder>")
+        print("Then stitch it on the laptop:  python analysis\\stitch_scan.py <scan file>")
 
 
 # ---------------------------------------------------------------- main
@@ -1276,6 +1300,9 @@ def main():
     p.add_argument("--out", default=None,
                    help="save the scan folder here (e.g. the USB stick) instead of ~/scans")
     p.add_argument("--name", default="", help="plate name, added to the scan folder name")
+    p.add_argument("--keep-folder", action="store_true",
+                   help="leave the photos as a folder instead of packing them into one "
+                        ".clonescan file")
     a = p.parse_args()
     if os.path.exists(OFFSETS_FILE):
         try:

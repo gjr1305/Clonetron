@@ -1,65 +1,59 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clonetron · setup</title>
-<link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"></head>
+<title>Clonetron · Setup</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/live.css"></head>
 <body>
-<header>
-  <div class="brand"><img src="/favicon.svg" width="24" height="24" alt="">Clonetron</div>
-  <nav>
-    <a href="/">Live</a>
-    <a href="/scan">Scan</a>
-    <a href="/setup" class="on">Setup</a>
-  </nav>
-  <div class="spacer"></div>
-  <span id="sim" class="pill sim" hidden>SIMULATOR</span>
-  <span id="st" class="pill">connecting…</span>
-  <a class="logout" href="/logout">Log out</a>
-</header>
 
-<div class="setup">
-  <div class="card">
-    <h3>Flat-field calibration</h3>
-    <p>Locks the exposure and white balance and records what the empty light looks like,
-       so photos come out with an even white background.</p>
-    <div class="kv">
-      <span>Last done</span><span id="camMade">–</span>
-      <span>Exposure</span><span id="camExp">–</span>
-    </div>
-    <p><b>Before you start:</b></p>
-    <ul>
-      <li>Take the plate <b>out</b>.</li>
-      <li>Light pad <b>on</b>, at the brightness you scan at.</li>
-      <li>Lid closed.</li>
-    </ul>
-    <p class="hint">Redo it whenever the light, its brightness or the optics change. Takes about a minute.</p>
-    <button class="primary" id="ffBtn">The plate is out: calibrate</button>
-  </div>
+<div class="stage"><img src="/stream.mjpg" alt="Camera view"></div>
+<div class="vignette" aria-hidden="true"></div>
 
-  <div class="card">
-    <h3>Focus map</h3>
-    <p>Autofocuses 19 spots in each well and saves the shape of the plate surface,
-       so scans can take every photo at the right height without refocusing.</p>
-    <div class="kv">
-      <span>Current map</span><span id="mapMade">–</span>
-      <span>Spots</span><span id="mapSpots">–</span>
-      <span>Height range</span><span id="mapRange">–</span>
-    </div>
-    <p class="hint">Use a plate with stained cells spread everywhere (a dense control plate is ideal).
-       Redo it when the plate holder or stage changes. About 9 minutes for 6 wells.</p>
-    <div class="field">Start searching at Z <input id="mapZ" type="number" step="0.1" min="5"> mm</div>
-    <div class="wellpick" id="mapWells"></div>
-    <button class="primary" id="mapBtn">Make focus map</button>
-  </div>
-
-  <div class="card log">
-    <div class="jobhead">
-      <h3 style="margin:0">Progress</h3>
-      <span id="jobStatus" class="pill">no job yet</span>
-      <span class="spacer"></span>
-      <button class="danger" id="cancelBtn" hidden>Cancel</button>
-    </div>
-    <pre id="log">Nothing has run since the app started.</pre>
-  </div>
+<div class="topbar glass">
+  <div class="brand"><b>Adelaide University</b><span>Clonetron</span></div>
+  <nav><a href="/">Live</a><a href="/scan">Scan</a><a href="/setup" class="on">Setup</a></nav>
 </div>
+<div class="topright">
+  <span id="sim" class="chip sim" hidden>Simulator</span>
+  <span id="st" class="chip">connecting…</span>
+  <a class="chip ghost" href="/logout">Log out</a>
+</div>
+
+<!-- left: flat-field -->
+<aside class="dock left glass wide">
+  <div class="dockhead"><h2>Flat-field calibration</h2><span class="sub">Even white background in every photo</span></div>
+  <div class="kv"><span>Last done</span><span id="camMade">–</span><span>Exposure</span><span id="camExp">–</span></div>
+  <ol class="steps-list">
+    <li>Take the plate <b>out</b></li>
+    <li>Light pad <b>on</b>, at scanning brightness</li>
+    <li>Close the lid</li>
+  </ol>
+  <p class="help">Redo it whenever the light, its brightness or the optics change. Takes about a minute.</p>
+  <button class="primary wide" id="ffBtn">Calibrate, plate is out</button>
+</aside>
+
+<!-- right: focus map -->
+<aside class="dock right glass wide">
+  <div class="dockhead"><h2>Focus map</h2><span class="sub">The plate's height at 19 spots per well</span></div>
+  <div class="kv"><span>Current map</span><span id="mapMade">–</span><span>Spots</span><span id="mapSpots">–</span><span>Height range</span><span id="mapRange">–</span></div>
+  <svg id="platemap" class="platemap" role="group" aria-label="Wells to map"></svg>
+  <p class="help">Click wells to include them. Use a plate with stained cells spread everywhere. About 1.5 min per well.</p>
+  <div class="field"><label for="mapZ">Start searching at Z (mm)</label><input id="mapZ" type="number" step="0.1" min="5"></div>
+  <button class="primary wide" id="mapBtn">Make focus map</button>
+</aside>
+
+<!-- bottom: job progress -->
+<div class="glass jobdock" id="jobdock">
+  <div class="head">
+    <h2 id="jobTitle">No calibration running</h2>
+    <span class="status" id="jobStatus">idle</span>
+    <span class="spacer"></span>
+    <button class="stop" id="cancelBtn" hidden>Cancel</button>
+  </div>
+  <details class="logdrawer" id="logWrap"><summary>Details</summary><pre id="log" class="logbox">Nothing has run since the app started.</pre></details>
+</div>
+
+<script src="/plate.js"></script>
 <script src="/setup.js"></script>
 </body></html>
