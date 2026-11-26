@@ -230,3 +230,7 @@ body.login .stage { background: radial-gradient(90% 80% at 30% 30%, #2a1f7a 0%, 
 .logincard .org { font-size: 13px; color: var(--dim); }
 .logincard .msg { color: var(--bad); }
 .logincard .msg:empty { display: none; }
+
+.busycard { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; max-width: min(640px, 80vw); }
+.busycard .bt { font-size: 34px; font-weight: 600; letter-spacing: -.5px; color: var(--violet); }
+.busycard .bl { margin-top: 10px; font-family: var(--num); font-size: 14px; color: var(--dim); }

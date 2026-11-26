@@ -221,6 +221,13 @@ def stitch_folder(path, a):
     info = scan.read_json("scan_info.json", {})
     rot = a.rotate if a.rotate is not None else info.get("rotate", 180)
     flat = FlatField(scan.load_npy("flat.npy"))
+    if flat.flat is None:
+        # scan made before the flat-field calibration: use the newest one the Pi put
+        # on the stick (Clonetron/calibration/flat.npy), if it's there
+        spare = os.path.join(os.path.dirname(scan.path), "calibration", "flat.npy")
+        if os.path.exists(spare):
+            flat = FlatField(np.load(spare))
+            print(f" (this scan has no flat-field; using {spare})")
     rows = list(csv.DictReader(io.StringIO(scan.read_text("positions.csv"))))
     wells = list(dict.fromkeys(r["well"] for r in rows))
     folder = scan.results_folder()

@@ -33,6 +33,7 @@
   setInterval(async () => {
     try {
       const d = await (await fetch('/api/state')).json();
+      showBusy(d);
       if (d.x !== undefined) map.place(d.x, d.y);
     } catch (e) {}
   }, 400);

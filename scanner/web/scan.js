@@ -158,6 +158,7 @@ function showJob(d) {
 async function poll() {
   try {
     const st = await getJSON('/api/state');
+    showBusy(st);
     const pill = $('st');
     pill.textContent = st.busy && st.action ? st.action : st.state;
     pill.className = 'chip ' + (st.busy ? 'warn' : st.state === 'Alarm' ? 'bad' : 'ok');

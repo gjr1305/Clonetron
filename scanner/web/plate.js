@@ -62,3 +62,22 @@ function PlateMap(svg, opts) {
 
   return {build, place, mark, names: () => Object.keys(wells)};
 }
+
+
+// While a job has the camera and no photo is showing yet, put a sharp text card
+// over the dark picture (title of the job and its latest log line).
+function showBusy(st) {
+  let el = document.getElementById('busycard');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'busycard'; el.className = 'busycard';
+    el.innerHTML = '<div class="bt"></div><div class="bl"></div>';
+    document.body.appendChild(el);
+  }
+  const on = st.cam_busy && !st.showing_photo;
+  el.hidden = !on;
+  if (on) {
+    el.querySelector('.bt').textContent = (st.job && st.job.title) || 'Busy';
+    el.querySelector('.bl').textContent = st.job_line || '';
+  }
+}

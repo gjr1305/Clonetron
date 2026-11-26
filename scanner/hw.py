@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 PREVIEW = (820, 616)        # size of the live picture sent to the browser
+PHOTO_PREVIEW = (1640, 1232)  # size of the newest scan photo shown during a scan
 MAIN_SIZE = (1640, 1232)    # camera frame size
 FOV_MM = (3.22, 2.41)       # what one camera frame covers on the plate
 
@@ -283,15 +284,12 @@ def autofocus(stage, cam, cam_lock, z_start, z_limit):
     return float(best), ratio
 
 
-def placeholder(text, sub=""):
-    """Grey picture with a message, shown while a job has the camera."""
+def placeholder(text="", sub=""):
+    """Plain dark picture shown while a job has the camera. The message itself is
+    drawn by the web page as sharp text (text drawn into this small picture
+    looked blurry once the browser stretched it to fill the screen)."""
     w, h = PREVIEW
-    img = np.full((h, w, 3), 28, np.uint8)
-    for t, y, sc, col in ((text, h // 2 - 10, 1.0, (250, 139, 167)), (sub, h // 2 + 30, 0.6, (200, 200, 200))):
-        if t:
-            (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, sc, 2)
-            cv2.putText(img, t, ((w - tw) // 2, y), cv2.FONT_HERSHEY_SIMPLEX, sc, col, 2, cv2.LINE_AA)
-    return img
+    return np.full((h, w, 3), (34, 10, 13), np.uint8)       # deep navy (BGR)
 
 
 def close_hardware(stage, cam):

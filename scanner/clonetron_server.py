@@ -166,6 +166,7 @@ class App:
             try:
                 if self.cam is None:              # a job has the camera
                     j = self.job or {}
+                    self._showing_photo = False
                     small = self._latest_photo(j)
                     if small is None:
                         small = hw.placeholder(j.get("title", "Busy"), (j.get("log") or [""])[-1][:70])
@@ -208,12 +209,8 @@ class App:
         img = cv2.imread(path)
         if img is None:
             return None
-        img = cv2.resize(img, hw.PREVIEW, interpolation=cv2.INTER_AREA)
-        p = j["progress"]
-        txt = f"{os.path.basename(path)}   {p.get('taken', 0)}/{p.get('total', '?')}"
-        cv2.rectangle(img, (0, 0), (hw.PREVIEW[0], 34), (20, 20, 20), -1)
-        cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (250, 139, 167), 2, cv2.LINE_AA)
-        return img
+        self._showing_photo = True
+        return self.flat.apply(cv2.resize(img, hw.PHOTO_PREVIEW, interpolation=cv2.INTER_AREA))
 
     # -- front-panel LCD
     @staticmethod
@@ -410,6 +407,9 @@ class App:
         return {"state": st, "x": round(x, 3), "y": round(y, 3), "z": round(z, 4),
                 "sharp": round(self.sharp, 1), "busy": self.busy.locked(),
                 "action": self.action, "sim": self.sim,
+                # a job has the camera: the page shows what it's doing until photos appear
+                "cam_busy": self.cam is None, "showing_photo": getattr(self, "_showing_photo", False),
+                "job_line": ((j or {}).get("log") or [""])[-1][:90] if self.cam is None else "",
                 "z_limit": self.cfg["z_limit_mm"], "lcd": self.lcd_lines,
                 "job": None if not j else {k: j.get(k) for k in ("kind", "title", "status", "started",
                                                                    "progress")}}
@@ -592,6 +592,8 @@ class App:
             if j.get("progress") is not None and j["status"] == "done":
                 p = j["progress"]
                 p["taken"], p["left_min"] = p.get("total") or p["taken"], 0
+            if j["kind"] == "flatfield" and j["status"] == "done":
+                self._calibration_to_stick(j["log"])
         except Exception as e:
             j["log"].append("Error: " + str(e))
             j["status"] = "failed"
@@ -672,6 +674,23 @@ class App:
         return {"stick": stick, "unmounted": usb.unmounted(self.sim), "reason": reasons[0] if reasons else None,
                 "recent": usb.recent_scans(stick) if stick else [],
                 "sim": self.sim, "sim_ejected": self.sim and not stick}
+
+    def _calibration_to_stick(self, log):
+        """Keep a copy of the newest calibration on the stick (Clonetron/calibration/),
+        so the laptop can correct older scans that were made before it existed."""
+        stick = usb.get(self.sim)
+        if not stick:
+            return
+        dest = os.path.join(stick["mount"], usb.SCAN_SUBFOLDER, "calibration")
+        try:
+            os.makedirs(dest, exist_ok=True)
+            for f in ("flat.npy", "camera.json", "calibration.json"):
+                src = os.path.join(config.SCANS_DIR, f)
+                if os.path.exists(src):
+                    shutil.copy2(src, dest)
+            log.append("Copied the calibration to the USB stick (Clonetron/calibration).")
+        except OSError as e:
+            log.append(f"Couldn't copy the calibration to the stick: {e}")
 
     def eject(self):
         j = self.job

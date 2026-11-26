@@ -289,6 +289,14 @@ def position(s):
         m = re.search(r"<(\w+)[|:].*?MPos:(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)", r)
         if m and m.group(1) == "Idle":
             return tuple(float(v) for v in m.groups()[1:])
+        if m and m.group(1) == "Alarm":
+            pn = re.search(r"Pn:([XYZ]+)", r)
+            raise RuntimeError(
+                "the stage stopped with an ALARM"
+                + (f": the {' and '.join(pn.group(1))} endstop switch is pressed. Is the stage "
+                   f"against it, or is that switch's wire loose?" if pn else
+                   ". An endstop switch flickered during a move (loose wire or electrical "
+                   "noise). Check the switch wires, then home the stage again."))
     raise RuntimeError("stage did not become idle")
 
 

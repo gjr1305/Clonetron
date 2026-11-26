@@ -71,6 +71,7 @@ $('cancelBtn').onclick = async () => {
 async function poll() {
   try {
     const st = await getJSON('/api/state');
+    showBusy(st);
     $('st').textContent = st.busy && st.action ? st.action : st.state;
     $('st').className = 'chip ' + (st.busy ? 'warn' : st.state === 'Alarm' ? 'bad' : 'ok');
     $('sim').hidden = !st.sim;
