@@ -77,7 +77,7 @@ function showUsb(u) {
     box.innerHTML = `<div class="usb"><b>${s.label}</b> &nbsp;${gb(s.free)} free of ${gb(s.total)}</div>
       <div class="usbbar"><div style="width:${used}%"></div></div>` + (s.writable ? '' : '<p class="why">Can\'t write to it. Is it write-protected?</p>');
   } else if (u.unmounted && u.unmounted.length) {
-    box.innerHTML = '<span class="why">A stick is plugged in but could not be opened. Unplug it and plug it back in.</span>';
+    box.innerHTML = `<span class="why">${u.reason || 'A stick is plugged in but could not be opened. Unplug it and plug it back in.'}</span>`;
   } else box.innerHTML = '<span class="why">No USB stick. Plug one into the Pi.</span>';
   $('ejectBtn').hidden = !u.stick;
   $('simPlugBtn').hidden = !u.sim_ejected;

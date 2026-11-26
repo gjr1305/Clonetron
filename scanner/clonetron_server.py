@@ -667,9 +667,9 @@ class App:
         return None, args
 
     def usb_state(self):
-        st = usb.sticks(self.sim)
-        stick = st[0] if st else None
-        return {"stick": stick, "unmounted": usb.unmounted(self.sim),
+        reasons = []
+        stick = usb.get(self.sim, reasons)          # also opens a stick that wasn't opened
+        return {"stick": stick, "unmounted": usb.unmounted(self.sim), "reason": reasons[0] if reasons else None,
                 "recent": usb.recent_scans(stick) if stick else [],
                 "sim": self.sim, "sim_ejected": self.sim and not stick}
 

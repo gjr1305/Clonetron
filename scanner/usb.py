@@ -75,18 +75,57 @@ def unmounted(sim=False):
     return found
 
 
+def _fstype(dev):
+    code, txt = _run(["lsblk", "-no", "FSTYPE", dev])
+    return txt.strip() if code == 0 else ""
+
+
+def _explain(dev, err):
+    """Turn a udisksctl error into something a person can act on."""
+    fs = _fstype(dev)
+    if "not authorized" in err.lower():
+        return ("The app isn't allowed to open USB sticks. On the Pi run: "
+                "cd ~/clonetron/scanner && bash install_service.sh")
+    if fs == "ntfs":
+        return ("This stick is formatted as NTFS, which the Pi can't open without an extra "
+                "driver. Either run  sudo apt install ntfs-3g  on the Pi, or reformat the "
+                "stick as exFAT on a laptop (this erases it).")
+    if fs == "exfat":
+        return "This exFAT stick couldn't be opened. On the Pi run:  sudo apt install exfatprogs"
+    if not fs:
+        return ("The stick has no format the Pi recognises. Format it as exFAT or FAT32 "
+                "on a laptop (this erases it).")
+    if "wrong fs type" in err or "superblock" in err:
+        return (f"The stick ({fs}) looks damaged or wasn't removed safely. Check it on a laptop, "
+                "or reformat it as exFAT.")
+    return "Couldn't open the stick: " + err.strip().splitlines()[-1][:200]
+
+
+_last_try = {}          # dev -> (time, reason): don't retry a failing stick every poll
+
+
 def try_mount(dev):
-    """Open a stick that wasn't opened automatically (needs udisks2, standard on Pi OS)."""
+    """Open a stick that wasn't opened automatically (needs udisks2, standard on Pi OS).
+    Returns None if it opened, else a plain-English reason."""
+    import time
+    t, reason = _last_try.get(dev, (0, None))
+    if reason and time.time() - t < 15:
+        return reason
     code, txt = _run(["udisksctl", "mount", "-b", dev, "--no-user-interaction"])
-    return None if code == 0 else txt or "couldn't open the stick"
+    reason = None if code == 0 else _explain(dev, txt or "")
+    _last_try[dev] = (time.time(), reason)
+    return reason
 
 
-def get(sim=False):
-    """The stick to save to, opening one if it's plugged in but not mounted."""
+def get(sim=False, reasons=None):
+    """The stick to save to, opening one if it's plugged in but not mounted.
+    If `reasons` is a list, why any stick couldn't be opened is added to it."""
     s = sticks(sim)
     if not s:
         for dev in unmounted(sim):
-            try_mount(dev)
+            r = try_mount(dev)
+            if r and reasons is not None:
+                reasons.append(r)
         s = sticks(sim)
     return s[0] if s else None
 
