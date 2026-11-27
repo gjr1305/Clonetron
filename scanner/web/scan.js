@@ -175,9 +175,14 @@ function showJob(d) {
   });
 
   const log = $('log');
-  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
-  log.textContent = (d.log || []).join('\n');
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  const text = (d.log || []).join('\n');
+  const sel = getSelection();
+  const selecting = sel && !sel.isCollapsed && log.contains(sel.anchorNode);
+  if (text !== log.textContent && !selecting) {   // don't wipe out a selection being copied
+    const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+    log.textContent = text;
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
   if (!active && showJob.was) getJSON('/api/usb').then(showUsb);
   showJob.was = active;
 }
@@ -211,3 +216,23 @@ getJSON('/api/info').then(i => {
 poll();
 setInterval(poll, 1000);
 setInterval(pollUsb, 3000);
+
+// ---- copy / save the scan log (works over plain http, where the clipboard API is off)
+$('copyLog').onclick = () => {
+  const t = document.createElement('textarea');
+  t.value = $('log').textContent; t.style.position = 'fixed'; t.style.opacity = '0';
+  document.body.appendChild(t); t.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  t.remove();
+  if (!ok && navigator.clipboard) navigator.clipboard.writeText($('log').textContent).then(() => ok = true);
+  $('copyLog').textContent = ok ? 'Copied ✓' : 'Copy failed: use Save';
+  setTimeout(() => $('copyLog').textContent = 'Copy log', 2000);
+};
+$('saveLog').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('log').textContent], {type: 'text/plain'}));
+  const name = ($('jobTitle').textContent || 'scan').replace(/[^A-Za-z0-9_-]+/g, '_');
+  a.download = `${new Date().toISOString().slice(0, 10)}-${name}-log.txt`;
+  document.body.appendChild(a); a.click(); a.remove();
+};
