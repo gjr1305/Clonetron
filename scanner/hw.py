@@ -30,7 +30,11 @@ def sharpness_of(img):
     h, w = g.shape[:2]
     g = g[h // 5: 4 * h // 5, w // 5: 4 * w // 5]
     g = cv2.resize(g, (384, int(384 * g.shape[0] / g.shape[1])), interpolation=cv2.INTER_AREA)
-    return float(cv2.Laplacian(g.astype(np.float32), cv2.CV_32F).var())
+    g = g.astype(np.float32)
+    # cell-sized detail (band-pass), not single-pixel edges: pixel edges are mostly
+    # sensor noise, which stays the same in and out of focus, so a far-off focus
+    # couldn't tell which way to go. Same measure as plate_scan.sharpness().
+    return float((cv2.GaussianBlur(g, (0, 0), 1.5) - cv2.GaussianBlur(g, (0, 0), 6)).var())
 
 
 # ---------------------------------------------------------------- real hardware
@@ -271,7 +275,7 @@ def autofocus(stage, cam, cam_lock, z_start, z_limit):
         return zs[i], i
 
     centre = z_start
-    for _ in range(3):
+    for _ in range(4):                      # follow the slope up to ~1.2 mm away
         zs, v = sweep(centre, 0.30, 0.05)
         best, i = peak(zs, v)
         if 0 < i < len(zs) - 1:

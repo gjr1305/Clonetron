@@ -404,10 +404,13 @@ def move_z(s, z):
 
 
 def sharpness(cam):
+    """Cell-sized detail in the middle of the picture (band-pass). A plain
+    Laplacian is mostly sensor noise, nearly the same in and out of focus, so a
+    search starting 0.5 mm off couldn't see which way focus was (2026-11-27)."""
     g = focus_image(cam).astype(np.float32)
     h, w = g.shape[:2]
     g = g[h // 5: 4 * h // 5, w // 5: 4 * w // 5]
-    return float(cv2.Laplacian(g, cv2.CV_32F).var())
+    return float((cv2.GaussianBlur(g, (0, 0), 1.5) - cv2.GaussianBlur(g, (0, 0), 6)).var())
 
 
 def peak(zs, vals):
@@ -435,7 +438,7 @@ def sweep(s, cam, centre, half, step, zmin, zmax):
 def autofocus(s, cam, z_start, zmin, zmax):
     """Full search. Returns (best machine Z, contrast ratio) or (None, ratio)."""
     centre = z_start
-    for _ in range(3):                             # coarse, moving the window if needed
+    for _ in range(4):                             # coarse, moving the window if needed
         zs, v = sweep(s, cam, centre, 0.30, 0.05, zmin, zmax)
         if len(zs) < 3:
             return None, 0.0
@@ -1035,36 +1038,71 @@ WELL_SPOTS = [(0.0, 0.0)] + [(round(12 * math.cos(math.radians(t)), 1),
                                round(12 * math.sin(math.radians(t)), 1)) for t in range(0, 360, 60)]
 
 
+PROBE_STEP = 3.0                       # mm between places tried when a focus spot is empty
+PROBES = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+CONTENT_GOOD = 0.02                    # >2% stained pixels (even blurred): enough to focus on
+
+
+def find_cells(s, cam, cx, cy, dx, dy, a):
+    """Sparse plates: the planned spot may be empty background, which the autofocus
+    can't lock onto. Look around it (up to 3 mm away, staying inside the well) for
+    the place with the most stained material; blurred colonies still show as dark.
+    Returns (dx, dy, dark fraction) of the best place found."""
+    best = (dx, dy, -1.0)
+    for px, py in PROBES:
+        tx, ty = dx + px * PROBE_STEP, dy + py * PROBE_STEP
+        if math.hypot(tx, ty) > 15.5:
+            continue
+        move(s, cx + tx, cy + ty, a.feed)
+        dark, _ = tile_quality(grab(cam))
+        if dark > best[2]:
+            best = (tx, ty, dark)
+        if dark >= CONTENT_GOOD:
+            break
+    return best
+
+
 def focus_well(s, cam, w, home, guess, a, zmin, zmax, fcsv=None):
     """--map-each-well: focus 7 spots in this well (centre + 6 at 12 mm) just before
-    scanning it. Returns (z0, b, c) for z = z0 + b*dx + c*dy (machine mm), or None."""
+    scanning it. Each spot first looks nearby for cells to focus on (sparse plates).
+    Returns (z0, b, c) for z = z0 + b*(dx) + c*(dy) (machine mm), or None."""
     hx, hy, hz = home
     cx, cy = well_centre(w, home)
     z0, b, c = guess
     pts = []
-    for k, (dx, dy) in enumerate(WELL_SPOTS):
+    for k, (dx0, dy0) in enumerate(WELL_SPOTS):
+        dx, dy, dark = find_cells(s, cam, cx, cy, dx0, dy0, a)
         move(s, cx + dx, cy + dy, a.feed)
         pred = z0 + b * dx + c * dy
-        if k == 0:                                 # centre: full search (plates differ)
+        if not pts:                                # first spot found: full search
             z, _ = autofocus(s, cam, pred, zmin, zmax)
+            if z is None and dark >= CONTENT_GOOD:  # cells here but focus far off: look wider
+                zs, v = sweep(s, cam, pred, 1.5, 0.1, zmin, zmax)
+                if len(zs) >= 3 and v.max() / max(np.median(v), 1e-6) >= 1.15:
+                    z, _ = autofocus(s, cam, float(peak(zs, v)[0]), zmin, zmax)
         else:
             z = fine_focus(s, cam, pred, zmin, zmax)
-        where = "centre" if k == 0 else f"({dx:+.0f},{dy:+.0f}) mm"
+        where = "centre" if k == 0 else f"({dx0:+.0f},{dy0:+.0f}) mm"
+        moved = "" if (dx, dy) == (dx0, dy0) else f"  (cells found {dx - dx0:+.0f},{dy - dy0:+.0f} mm away)"
         if z is None:
-            print(f"  focus {where:12s} skipped (nothing sharp here)", flush=True)
+            why = "nothing sharp here" if dark >= CONTENT_GOOD else "no cells nearby"
+            print(f"  focus {where:12s} skipped ({why}){moved}", flush=True)
             continue
         pts.append((dx, dy, z))
-        if k == 0:
-            z0 = z                                 # aim the ring from the centre
-        print(f"  focus {where:12s} Z {z - hz:6.3f} mm", flush=True)
+        if len(pts) == 1:
+            z0 = z - b * dx - c * dy                # aim the rest from this first spot
+        print(f"  focus {where:12s} Z {z - hz:6.3f} mm{moved}", flush=True)
         if fcsv:
-            fcsv.write(f"{w},well-focus,{dx:.1f},{dy:.1f},{z - hz:.4f},\n")
+            fcsv.write(f"{w},well-focus,{dx:.1f},{dy:.1f},{z - hz:.4f},stained {100 * dark:.1f}%\n")
     if not pts:
         return None
     if len(pts) < 3:                               # too few to see a tilt: keep the old one
-        return float(np.mean([p[2] for p in pts])), b, c
+        zc = float(np.mean([p[2] - b * p[0] - c * p[1] for p in pts]))
+        print(f"  focused only {len(pts)} of {len(WELL_SPOTS)} spots: height from those, "
+              f"tilt from before", flush=True)
+        return zc, b, c
     a0, bn, cn, keep, dropped = fit_plane(pts, b, c)
-    if abs(bn) > TILT_MAX or abs(cn) > TILT_MAX:   # implausibly steep: flat at the centre
+    if abs(bn) > TILT_MAX or abs(cn) > TILT_MAX:   # implausibly steep: flat
         bn, cn = 0.0, 0.0
         a0 = float(np.median([p[2] for p in keep]))
     zz = [p[2] for p in keep]
