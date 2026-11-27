@@ -1031,10 +1031,54 @@ def check_plane(s, cam, surf, w, home, corr, a, zmin, zmax, fcsv=None, mp_points
     return a0n, bn, cn
 
 
+WELL_SPOTS = [(0.0, 0.0)] + [(round(12 * math.cos(math.radians(t)), 1),
+                               round(12 * math.sin(math.radians(t)), 1)) for t in range(0, 360, 60)]
+
+
+def focus_well(s, cam, w, home, guess, a, zmin, zmax, fcsv=None):
+    """--map-each-well: focus 7 spots in this well (centre + 6 at 12 mm) just before
+    scanning it. Returns (z0, b, c) for z = z0 + b*dx + c*dy (machine mm), or None."""
+    hx, hy, hz = home
+    cx, cy = well_centre(w, home)
+    z0, b, c = guess
+    pts = []
+    for k, (dx, dy) in enumerate(WELL_SPOTS):
+        move(s, cx + dx, cy + dy, a.feed)
+        pred = z0 + b * dx + c * dy
+        if k == 0:                                 # centre: full search (plates differ)
+            z, _ = autofocus(s, cam, pred, zmin, zmax)
+        else:
+            z = fine_focus(s, cam, pred, zmin, zmax)
+        where = "centre" if k == 0 else f"({dx:+.0f},{dy:+.0f}) mm"
+        if z is None:
+            print(f"  focus {where:12s} skipped (nothing sharp here)", flush=True)
+            continue
+        pts.append((dx, dy, z))
+        if k == 0:
+            z0 = z                                 # aim the ring from the centre
+        print(f"  focus {where:12s} Z {z - hz:6.3f} mm", flush=True)
+        if fcsv:
+            fcsv.write(f"{w},well-focus,{dx:.1f},{dy:.1f},{z - hz:.4f},\n")
+    if not pts:
+        return None
+    if len(pts) < 3:                               # too few to see a tilt: keep the old one
+        return float(np.mean([p[2] for p in pts])), b, c
+    a0, bn, cn, keep, dropped = fit_plane(pts, b, c)
+    if abs(bn) > TILT_MAX or abs(cn) > TILT_MAX:   # implausibly steep: flat at the centre
+        bn, cn = 0.0, 0.0
+        a0 = float(np.median([p[2] for p in keep]))
+    zz = [p[2] for p in keep]
+    print(f"  focused {len(keep)} of {len(WELL_SPOTS)} spots"
+          + (f" ({len(dropped)} thrown out)" if dropped else "")
+          + f", range {1000 * (max(zz) - min(zz)):.0f} um, tilt {1000 * bn:+.1f} / "
+          f"{1000 * cn:+.1f} um/mm", flush=True)
+    return a0, bn, cn
+
+
 def scan(a, wells, size):
     T0 = time.time()
-    mp = None if (a.no_af or a.focus_once) else load_map()
-    if not (a.no_af or a.focus_once) and not mp:
+    mp = None if (a.no_af or a.focus_once or a.map_each_well) else load_map()
+    if not (a.no_af or a.focus_once or a.map_each_well) and not mp:
         sys.exit("No focus map yet. Make one first (once, ~10-15 min):\n"
                  f"  python3 {os.path.basename(sys.argv[0])} --make-map")
     surf = Surface([p[1:] for p in mp["points"]]) if mp else None
@@ -1094,6 +1138,7 @@ def scan(a, wells, size):
             offset = first_offset or 0.0
             move_z(s, hz + surf(*c0) + offset)
         corr = (offset, 0.0, 0.0)
+        well_plane = (z_fixed, 0.0, 0.0)          # --map-each-well: first guess, then carried over
 
         calib = calibrate(s, cam, size) if a.calibrate else load_calib()
         if calib and calib.get("slack_mm"):
@@ -1131,7 +1176,16 @@ def scan(a, wells, size):
                             corr[1], corr[2])
                 if wi > 0:
                     print(f"\n{w}:")
-                if surf:
+                if a.map_each_well:
+                    tf = time.time()
+                    res = focus_well(s, cam, w, home, well_plane, a, zmin, zmax, fcsv)
+                    t_focus += time.time() - tf
+                    if res is None:
+                        print("  WARNING: nothing sharp in this well; using the last well's height")
+                    else:
+                        well_plane = res
+                    base = lambda dx, dy, p=well_plane: p[0] + p[1] * dx + p[2] * dy
+                elif surf:
                     corr = check_plane(s, cam, surf, w, home, corr, a, zmin, zmax, fcsv,
                                        mp["points"])
                     a0, bt, ct = corr
@@ -1139,7 +1193,7 @@ def scan(a, wells, size):
                                f"{1000 * bt:+.1f}/{1000 * ct:+.1f} um/mm\n")
                     base = lambda dx, dy, cx=cx, cy=cy, a0=a0, bt=bt, ct=ct: (
                         hz + surf(cx + dx - hx, cy + dy - hy) + a0 + bt * dx + ct * dy)
-                else:
+                elif not a.map_each_well:
                     base = lambda dx, dy, zf=z_fixed: zf
                 zf = FocusMap(base)
                 done = []                          # (i, dx, dy, x, y, z, name, dark, q)
@@ -1172,7 +1226,8 @@ def scan(a, wells, size):
                 # ---- blur check: re-shoot only the photos that came out soft
                 cont = [d for d in done if d[7] >= CONTENT_MIN
                         and inside_fraction(d[1], d[2], fx, fy) >= 0.4]   # mostly in the well
-                if surf and not a.no_recheck and len(cont) >= 4:
+                checked = surf or a.map_each_well
+                if checked and not a.no_recheck and len(cont) >= 4:
                     med = float(np.median([d[8] for d in cont]))
                     soft = sorted([d for d in cont if d[8] < BLUR_RATIO * med], key=lambda d: d[8])
                     cap = max(3, int(a.reshoot_max * len(tiles)))
@@ -1196,7 +1251,7 @@ def scan(a, wells, size):
                                    f"{q / med:.2f}->{q2 / med:.2f}\n")
                     if soft:
                         print(f"  re-shot {fixed} (the rest were already as sharp as they get)")
-                elif surf and not a.no_recheck:
+                elif checked and not a.no_recheck:
                     print("  blur check skipped (too few photos with cells in them)")
                 fcsv.flush()
                 print(f"  {w} done in {(time.time() - tw) / 60:.1f} min")
@@ -1291,6 +1346,8 @@ def main():
                    help="mm around each well centre to photograph (default 19, or 18 once "
                         "well_offsets.json exists; the well itself is 17.4)")
     p.add_argument("--stitch", action="store_true", help="also stitch on the Pi (slow)")
+    p.add_argument("--map-each-well", action="store_true",
+                   help="focus 7 spots in each well right before scanning it (no saved map needed)")
     p.add_argument("--check-points", type=int, default=5, choices=(5, 7),
                    help="focus check points per well (default 5)")
     p.add_argument("--reshoot-max", type=float, default=RESHOOT_MAX,

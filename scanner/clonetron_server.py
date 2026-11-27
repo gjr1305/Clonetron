@@ -110,7 +110,7 @@ MAP_FILE = os.path.join(config.SCANS_DIR, "focus_map.json")
 CAMERA_FILE = os.path.join(config.SCANS_DIR, "camera.json")
 FLAT_FILE = os.path.join(config.SCANS_DIR, "flat.npy")
 OFFSETS_FILE = os.path.join(config.SCANS_DIR, "well_offsets.json")
-MAP_MIN_PER_WELL = 1.5     # focus map made at the start of every scan
+MAP_MIN_PER_WELL = 1.5     # 7-spot focus at the start of every well
 PHOTOS_PER_WELL = 213          # 35 mm well, 3.2 x 2.4 mm photos, 10% overlap
 MB_PER_PHOTO = 1.3             # JPEG at quality 95 is ~0.8-1.1 MB; extra for re-shoots
 MIN_PER_WELL = 4.0             # rough time per well with the focus map and blur check
@@ -532,6 +532,7 @@ class App:
         "scan": ("Scanning", ["plate_scan.py"]),
     }
     MAP_SPOTS_PER_WELL = 19
+    FOCUS_SPOTS_PER_WELL = 7                      # plate_scan.py --map-each-well
 
     def start_job(self, kind, opts):
         if kind not in self.JOBS:
@@ -563,10 +564,8 @@ class App:
                 return err
             title = "Scanning " + (opts.get("name") or "plate")
             scan_wells = extra[extra.index("--wells") + 1].split(",")
-            # every scan starts with a fresh focus map of the wells it's about to scan
-            z = float(self.cfg["z_default_mm"])
-            argvs = [["plate_scan.py", "--make-map", "--z", f"{z:.3f}", "--wells", ",".join(scan_wells)],
-                     argv + extra]
+            # each well: focus 7 spots, then its photos (no saved map needed)
+            argvs = [argv + extra + ["--map-each-well"]]
         if self.sim:
             argvs = [["sim_job.py", "map" if "--make-map" in a else kind] + a[1:] for a in argvs]
         self.action = title
@@ -574,8 +573,8 @@ class App:
                     "started": time.strftime("%H:%M:%S"), "proc": None, "code": None,
                     "progress": {"taken": 0, "total": None, "well": None, "left_min": None,
                                  "folder": None, "file": None, "packing": False,
-                                 "phase": "mapping", "map_done": 0,
-                                 "map_total": self.MAP_SPOTS_PER_WELL * len(scan_wells),
+                                 "phase": "scanning", "step": "focus", "focus_done": 0,
+                                 "focus_total": self.FOCUS_SPOTS_PER_WELL,
                                  "wells": scan_wells if kind == "scan" else []} if kind == "scan" else None}
         threading.Thread(target=self._run_job, args=(argvs,), daemon=True).start()
         return None
@@ -645,9 +644,14 @@ class App:
                 p["map_done"] = min(p.get("map_done", 0) + 1, p.get("map_total") or 10 ** 6)
             return
         m = PROGRESS_RE.match(line)
+        if re.match(r"\s+focus\s", line):            # --map-each-well: focusing this well
+            p["step"], p["focus_done"] = "focus", p.get("focus_done", 0) + 1
+        elif line.strip().startswith("focused ") or line.strip().startswith("WARNING: nothing sharp"):
+            p["step"] = "photos"
         if m:
             p["taken"], p["total"] = int(m[1]), int(m[2])
             p["left_min"] = float(m[4])
+            p["step"] = "photos"
         elif line.startswith("SCAN_FOLDER: "):
             p["folder"] = line[len("SCAN_FOLDER: "):].strip()
         elif line == "PACKING":
@@ -658,6 +662,7 @@ class App:
             p["packed"] = [int(m3[1]), int(m3[2])]
         elif re.fullmatch(r"[A-Z]{2}:", line.strip()):
             p["well"] = line.strip()[:-1]
+            p["step"], p["focus_done"] = "focus", 0
         elif "photos per well" in line:
             m2 = re.search(r"(\d+) in total", line)
             if m2:

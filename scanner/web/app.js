@@ -40,6 +40,11 @@ function show(d) {
   if (jb) {
     const running = d.job && (d.job.status === 'running' || d.job.status === 'cancelling');
     jb.style.display = running ? 'block' : 'none';
+    // coming back to the app while a scan runs: go straight to its progress
+    if (running && !show.checked && location.pathname === '/' && d.job.kind !== 'flatfield') {
+      location.replace('/scan'); return;
+    }
+    show.checked = true;
     if (running) jb.innerHTML = `<b>${d.job.title}</b> is running, so the camera and stage are in use. <a href="/scan">See progress</a>`;
   }
   $('px').innerHTML = `${Math.abs(d.x).toFixed(2)} <small>${d.x < 0 ? 'left' : d.x > 0 ? 'right' : ''}</small>`;

@@ -72,6 +72,11 @@ def fake_scan(argv):
     csv.write("file,well,machine_x_mm,machine_y_mm,machine_z_mm\n")
     for w in wells:
         print(f"\n{w}:", flush=True)
+        if "--map-each-well" in argv:             # same lines as plate_scan.py
+            for k in range(7):
+                time.sleep(0.25)
+                print(f"  focus {'centre' if k == 0 else 'ring ' + str(k):12s} Z {19.58 + 0.003 * k:6.3f} mm", flush=True)
+            print("  focused 7 of 7 spots, range 18 um, tilt +0.4 / -0.2 um/mm", flush=True)
         big = fake_well(rng)
         c = big.shape[0] // 2
         for i, (dx, dy) in enumerate(grid):

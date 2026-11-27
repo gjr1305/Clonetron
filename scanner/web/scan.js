@@ -141,19 +141,17 @@ function showJob(d) {
 
   const p = j.progress || {};
   const total = p.total || 0;
-  const mapping = p.phase === 'mapping';
-  // the bar covers both steps: focus map ~25 %, photos ~75 %
-  const mapFrac = p.map_total ? Math.min(1, p.map_done / p.map_total) : 0;
-  const pct = Math.round(mapping ? 25 * mapFrac : 25 + (total ? 75 * p.taken / total : 0));
-  $('pPhase').textContent = p.packing ? '3 of 3: packing' : mapping ? '1 of 2: focus map' : '2 of 2: photos';
+  const focusing = active && p.step === 'focus' && !p.packing;
+  const pct = total ? Math.round(100 * p.taken / total) : 0;
+  $('pPhase').textContent = p.packing ? 'packing into one file' : !active ? '–'
+    : focusing ? `focusing ${Math.min(p.focus_done || 0, p.focus_total || 7)} / ${p.focus_total || 7} spots` : 'taking photos';
   $('jobTitle').textContent = j.title;
   $('jobStarted').textContent = 'Started ' + j.started;
   $('pct').innerHTML = `${j.status === 'done' ? 100 : pct}<small>%</small>`;
   $('bar').style.width = (j.status === 'done' ? 100 : pct) + '%';
   $('pWell').textContent = p.packing ? 'all done' : active ? (p.well || 'starting') : '–';
-  $('pPhotosL').textContent = mapping ? 'Focus spots' : 'Photos';
-  $('pPhotos').textContent = mapping ? `${p.map_done || 0} / ${p.map_total || '?'}` : total ? `${p.taken} / ${total}` : (p.taken || '–');
-  $('pLeft').textContent = p.packing ? '~1–3 min' : mapping && active ? 'after the map' : active ? (p.left_min != null ? `~${Math.ceil(p.left_min)} min` : '…') : '–';
+  $('pPhotos').textContent = total ? `${p.taken} / ${total}` : (p.taken || '–');
+  $('pLeft').textContent = p.packing ? '~1–3 min' : active ? (p.left_min != null ? `~${Math.ceil(p.left_min)} min` : '…') : '–';
   const words = {running: 'scanning', cancelling: 'stopping…', done: 'finished', failed: 'stopped: problem', cancelled: 'stopped'};
   $('jobStatus').textContent = p.packing
     ? 'packing into one file' + (p.packed ? ` ${Math.round(100 * p.packed[0] / p.packed[1])}%` : '…')
@@ -171,9 +169,7 @@ function showJob(d) {
   map.names().forEach(w => {
     const k = wells.indexOf(w);
     if (k < 0) return map.mark(w, '', 0);
-    if (!mapping && (j.status === 'done' || (idx >= 0 && k < idx))) return map.mark(w, 'done', 1);
-    if (mapping) return map.mark(w, k === idx ? 'scanning' : 'pending',
-                                 k === idx ? ((p.map_done || 0) % 19) / 19 : 0);
+    if (j.status === 'done' || (idx >= 0 && k < idx)) return map.mark(w, 'done', 1);
     if (k === idx) return map.mark(w, 'scanning', perWell ? (p.taken - k * perWell) / perWell : 0);
     map.mark(w, 'pending', 0);
   });
