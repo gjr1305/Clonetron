@@ -206,6 +206,7 @@ Z_FEED = 200                           # mm/min for focus moves
 BACKLASH = 0.50                        # mm: Z always finishes moving upwards from this far below
 TILT_R = 11.0                          # mm from the well centre for the 4 tilt-check points
 TILT_MAX = 0.02                        # mm per mm: ignore tilt fits steeper than this (20 um/mm)
+MAX_RECOVER = 5                        # GRBL restarts/alarms a scan re-homes after before giving up
 OUTPUT_ROTATE = 180                    # degrees; camera was turned 180 on 2026-11-23
 MAP_SPOTS = [(0.0, 0.0)] + [                 # centre, inner ring (8 mm), outer ring (14 mm)
     (round(r * math.cos(math.radians(a)), 1), round(r * math.sin(math.radians(a)), 1))
@@ -268,16 +269,40 @@ def open_grbl():
     return s
 
 
-def send(s, line, timeout=180):
+class GrblStopped(RuntimeError):
+    """GRBL restarted or went into alarm mid-run: the scan re-homes and carries on."""
+
+
+def send(s, line, timeout=None):
+    timeout = timeout or (240 if line.startswith("$H") else 90)
     s.write((line + "\n").encode())
     buf, t = "", time.time()
     while time.time() - t < timeout:
         buf += s.read(s.in_waiting or 1).decode(errors="ignore")
+        if "Grbl " in buf:                         # its start-up message: it has just reset
+            raise GrblStopped(f"{line} -> GRBL restarted")
         if "ok" in buf:
             return
-        if "error" in buf or "ALARM" in buf:
+        if "ALARM" in buf:
+            raise GrblStopped(f"{line} -> {buf.strip()}")
+        if "error" in buf:
             raise RuntimeError(f"{line} -> {buf.strip()}")
-    raise RuntimeError(f"{line} -> no reply")
+    raise GrblStopped(f"{line} -> no reply (GRBL probably restarted)")
+
+
+def recover(s, home):
+    """After a GRBL restart/alarm: reset, home again (machine coordinates come back
+    the same, since homing defines them), and check we're where we were."""
+    s.write(b"\x18")                              # soft reset: clean state
+    time.sleep(2.0)
+    s.reset_input_buffer()
+    send(s, "$H")
+    hx, hy, hz = position(s)
+    send(s, "G21")
+    _xy[0] = _xy[1] = None                         # forget where we were: next moves are full
+    _zpos[0] = None
+    off = max(abs(hx - home[0]), abs(hy - home[1]), abs(hz - home[2]))
+    print(f"  re-homed (home differs by {1000 * off:.0f} um)", flush=True)
 
 
 def grbl_z_top(s, margin=0.3):
@@ -306,7 +331,7 @@ def position(s):
             return tuple(float(v) for v in m.groups()[1:])
         if m and m.group(1) == "Alarm":
             pn = re.search(r"Pn:([XYZ]+)", r)
-            raise RuntimeError(
+            raise GrblStopped(
                 "the stage stopped with an ALARM"
                 + (f": the {' and '.join(pn.group(1))} endstop switch is pressed. Is the stage "
                    f"against it, or is that switch's wire loose?" if pn else
@@ -1235,6 +1260,7 @@ def scan(a, wells, size):
         corr = (offset, 0.0, 0.0)
         well_plane = (z_fixed, 0.0, 0.0)          # (older 7-spot mode, unused)
         z_track = [z_fixed]                        # --map-each-well: current focus, carried well to well
+        recoveries = 0                             # GRBL restarts survived (MAX_RECOVER allowed)
 
         calib = calibrate(s, cam, size) if a.calibrate else load_calib()
         if calib and calib.get("slack_mm"):
@@ -1277,8 +1303,17 @@ def scan(a, wells, size):
                     order = spiral_order(tiles, sx, sy)
                     tf = time.time()
                     print("  focus: looking for cells near the middle...", flush=True)
-                    zfound, where = find_focus_spiral(s, cam, cx, cy, order, z_track[0],
-                                                      a, zmin, zmax, hz)
+                    for attempt in range(2):
+                        try:
+                            zfound, where = find_focus_spiral(s, cam, cx, cy, order, z_track[0],
+                                                              a, zmin, zmax, hz)
+                            break
+                        except GrblStopped as e:
+                            recoveries += 1
+                            print(f"  GRBL stopped while finding focus ({e}); re-homing", flush=True)
+                            if recoveries > MAX_RECOVER or attempt:
+                                raise
+                            recover(s, home)
                     t_focus += time.time() - tf
                     if zfound is None:
                         print(f"  focused: WARNING nothing to focus on found; using Z "
@@ -1316,43 +1351,53 @@ def scan(a, wells, size):
                 done = []                          # (i, dx, dy, x, y, z, name, dark, q)
                 for i, (dx, dy) in enumerate(order):
                     x, y = cx + dx, cy + dy
-                    move(s, x, y, a.feed)
-                    z = zf(dx, dy)
-                    if surf and a.af_every > 0 and i % a.af_every == 0:
-                        zl = fine_focus(s, cam, z, zmin, zmax)
-                        if zl is not None:
-                            r = zf.add(dx, dy, zl)
-                            z = zl
-                            fcsv.write(f"{w},refocus,{dx:.2f},{dy:.2f},{zl - hz:.4f},"
-                                       f"{1000 * r:+.0f} um from map\n")
-                    move_z(s, z)
-                    time.sleep(a.settle)
-                    img = grab(cam)
-                    name = f"{w}_{i:04d}.jpg"
-                    writer.put(os.path.join(folder, name), img)
-                    dark, q = tile_quality(img)
-                    if a.map_each_well:            # refocus about every 10th photo with cells
-                        since += 1
-                        if math.hypot(dx - prev[0], dy - prev[1]) > 2.5 * max(sx, sy):
-                            since = a.refocus_every    # long jump across the well: refocus soon
-                        prev = (dx, dy)
-                        if since >= a.refocus_every and dark >= CONTENT_GOOD:
-                            since = 0
-                            zl = fine_focus(s, cam, z, zmin, zmax)
-                            if zl is not None:
-                                refocused += 1
-                                zs_seen.append(zl)
-                                if abs(zl - z) > 0.02:     # moved noticeably: retake this one
-                                    move_z(s, zl)
-                                    time.sleep(a.settle)
-                                    img = grab(cam)
-                                    writer.put(os.path.join(folder, name), img)
-                                    dark, q = tile_quality(img)
-                                    fcsv.write(f"{w},refocus,{dx:.2f},{dy:.2f},{zl - hz:.4f},"
-                                               f"{1000 * (zl - z):+.0f} um, photo retaken\n")
+                    while True:                    # GRBL restarted? re-home and redo this photo
+                        try:
+                            move(s, x, y, a.feed)
+                            z = zf(dx, dy)
+                            if surf and a.af_every > 0 and i % a.af_every == 0:
+                                zl = fine_focus(s, cam, z, zmin, zmax)
+                                if zl is not None:
+                                    r = zf.add(dx, dy, zl)
                                     z = zl
-                                z_track[0] = zl
-                                fpts.append((dx, dy, zl))
+                                    fcsv.write(f"{w},refocus,{dx:.2f},{dy:.2f},{zl - hz:.4f},"
+                                               f"{1000 * r:+.0f} um from map\n")
+                            move_z(s, z)
+                            time.sleep(a.settle)
+                            img = grab(cam)
+                            name = f"{w}_{i:04d}.jpg"
+                            writer.put(os.path.join(folder, name), img)
+                            dark, q = tile_quality(img)
+                            if a.map_each_well:            # refocus about every 10th photo with cells
+                                since += 1
+                                if math.hypot(dx - prev[0], dy - prev[1]) > 2.5 * max(sx, sy):
+                                    since = a.refocus_every    # long jump across the well: refocus soon
+                                prev = (dx, dy)
+                                if since >= a.refocus_every and dark >= CONTENT_GOOD:
+                                    since = 0
+                                    zl = fine_focus(s, cam, z, zmin, zmax)
+                                    if zl is not None:
+                                        refocused += 1
+                                        zs_seen.append(zl)
+                                        if abs(zl - z) > 0.02:     # moved noticeably: retake this one
+                                            move_z(s, zl)
+                                            time.sleep(a.settle)
+                                            img = grab(cam)
+                                            writer.put(os.path.join(folder, name), img)
+                                            dark, q = tile_quality(img)
+                                            fcsv.write(f"{w},refocus,{dx:.2f},{dy:.2f},{zl - hz:.4f},"
+                                                       f"{1000 * (zl - z):+.0f} um, photo retaken\n")
+                                            z = zl
+                                        z_track[0] = zl
+                                        fpts.append((dx, dy, zl))
+                            break
+                        except GrblStopped as e:
+                            recoveries += 1
+                            print(f"  GRBL stopped at photo {taken + 1} ({e}); re-homing and "
+                                  f"carrying on (recovery {recoveries} of {MAX_RECOVER})", flush=True)
+                            if recoveries > MAX_RECOVER:
+                                raise
+                            recover(s, home)
                     done.append((i, dx, dy, x, y, z, name, dark, q))
                     csv.write(f"{name},{w},{x:.3f},{y:.3f},{z:.4f}\n")
                     csv.flush()
@@ -1377,20 +1422,27 @@ def scan(a, wells, size):
                     if soft:
                         print(f"  {len(soft)} photo(s) look soft, re-shooting "
                               f"{min(len(soft), cap)}...")
-                    for i, dx, dy, x, y, z, name, dark, q in soft[:cap]:
-                        move(s, x, y, a.feed)
-                        zl = fine_focus(s, cam, z, zmin, zmax)
-                        if zl is None or abs(zl - z) < 0.02:
-                            continue                   # it was in focus; just faint cells
-                        move_z(s, zl)
-                        time.sleep(a.settle)
-                        img = grab(cam)
-                        writer.put(os.path.join(folder, name), img)
-                        _, q2 = tile_quality(img)
-                        fixed += 1
-                        fcsv.write(f"{w},reshoot,{dx:.2f},{dy:.2f},{zl - hz:.4f},"
-                                   f"{name} was {1000 * (z - zl):+.0f} um off, sharpness "
-                                   f"{q / med:.2f}->{q2 / med:.2f}\n")
+                    try:
+                        for i, dx, dy, x, y, z, name, dark, q in soft[:cap]:
+                            move(s, x, y, a.feed)
+                            zl = fine_focus(s, cam, z, zmin, zmax)
+                            if zl is None or abs(zl - z) < 0.02:
+                                continue                   # it was in focus; just faint cells
+                            move_z(s, zl)
+                            time.sleep(a.settle)
+                            img = grab(cam)
+                            writer.put(os.path.join(folder, name), img)
+                            _, q2 = tile_quality(img)
+                            fixed += 1
+                            fcsv.write(f"{w},reshoot,{dx:.2f},{dy:.2f},{zl - hz:.4f},"
+                                       f"{name} was {1000 * (z - zl):+.0f} um off, sharpness "
+                                       f"{q / med:.2f}->{q2 / med:.2f}\n")
+                    except GrblStopped as e:          # skip the rest of the re-shoots
+                        recoveries += 1
+                        print(f"  GRBL stopped during re-shoots ({e}); re-homing", flush=True)
+                        if recoveries > MAX_RECOVER:
+                            raise
+                        recover(s, home)
                     if soft:
                         print(f"  re-shot {fixed} (the rest were already as sharp as they get)")
                 elif checked and not a.no_recheck:
