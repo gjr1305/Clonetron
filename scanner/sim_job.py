@@ -73,11 +73,10 @@ def fake_scan(argv):
     for w in wells:
         print(f"\n{w}:", flush=True)
         if "--map-each-well" in argv:             # same lines as plate_scan.py
-            print("  focus: looking for cells near the middle...", flush=True)
-            for k in range(2):
-                time.sleep(0.5)
-                print(f"  focus try {k + 1} at (+{2.9 * (k + 1):.1f},+0.0) mm, 4% stained", flush=True)
-            print("  focused at Z 19.430 mm", flush=True)
+            for k in range(9):
+                time.sleep(0.2)
+                print(f"  focus spot (+{k:.1f},+0.0) Z {19.43 + 0.004 * k:6.3f} mm", flush=True)
+            print("  focused 9 of 9 spots, range 32 um", flush=True)
         big = fake_well(rng)
         c = big.shape[0] // 2
         for i, (dx, dy) in enumerate(grid):

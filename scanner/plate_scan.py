@@ -99,6 +99,7 @@ import shutil
 import math
 import os
 import queue
+from concurrent.futures import ThreadPoolExecutor
 import re
 import signal
 import sys
@@ -206,6 +207,7 @@ Z_FEED = 200                           # mm/min for focus moves
 BACKLASH = 0.50                        # mm: Z always finishes moving upwards from this far below
 TILT_R = 11.0                          # mm from the well centre for the 4 tilt-check points
 TILT_MAX = 0.02                        # mm per mm: ignore tilt fits steeper than this (20 um/mm)
+CHECK = ThreadPoolExecutor(max_workers=1)  # photo sharpness checks while the stage moves on
 ANCHOR_MM = 0.20                       # a later well's focus must be this close to the last one's
 MAX_RECOVER = 5                        # GRBL restarts/alarms a scan re-homes after before giving up
 OUTPUT_ROTATE = 180                    # degrees; camera was turned 180 on 2026-11-23
@@ -1168,6 +1170,83 @@ def find_focus_spiral(s, cam, cx, cy, order, z_guess, a, zmin, zmax, hz, tries=8
     return None, None
 
 
+FOCUS_SPOTS_9 = [(0.0, 0.0)] + \
+    [(round(7.5 * math.cos(math.radians(t)), 1), round(7.5 * math.sin(math.radians(t)), 1))
+     for t in (0, 90, 180, 270)] + \
+    [(round(14 * math.cos(math.radians(t)), 1), round(14 * math.sin(math.radians(t)), 1))
+     for t in (45, 135, 225, 315)]
+
+
+def measure_well(s, cam, w, home, z_guess, a, zmin, zmax, anchored=False, fcsv=None):
+    """Focus at 9 spots: centre, 4 at 7.5 mm, 4 near the rim at 14 mm (an empty spot
+    looks up to 3 mm around for cells). The first spot of a later well searches near
+    the last well's height and ignores results further than ANCHOR_MM. Returns
+    [(dx, dy, z)] for the spots that focused. (Chosen from the 2026-11-27 surveys.)"""
+    hz = home[2]
+    cx, cy = well_centre(w, home)
+    pts = []
+    for dx0, dy0 in FOCUS_SPOTS_9:
+        dx, dy, dark = find_cells(s, cam, cx, cy, dx0, dy0, a)
+        move(s, cx + dx, cy + dy, a.feed)
+        if pts:
+            z = fine_focus(s, cam, float(np.median([p[2] for p in pts])), zmin, zmax)
+        else:
+            z = fine_focus(s, cam, z_guess, zmin, zmax) if anchored else None
+            if z is not None and abs(z - z_guess) > ANCHOR_MM:
+                z = None
+            if z is None:
+                z, _ = autofocus(s, cam, z_guess, zmin, zmax)
+                if anchored and z is not None and abs(z - z_guess) > ANCHOR_MM:
+                    print(f"  (found {z - hz:.3f} mm, too far from the last well; ignored)",
+                          flush=True)
+                    z = None
+        moved = "" if (dx, dy) == (dx0, dy0) else f"  (cells {dx - dx0:+.0f},{dy - dy0:+.0f} mm away)"
+        where = f"({dx0:+5.1f},{dy0:+5.1f})"
+        if z is None:
+            print(f"  focus spot {where} skipped{moved}", flush=True)
+            continue
+        pts.append((dx, dy, z))
+        print(f"  focus spot {where} Z {z - hz:6.3f} mm{moved}", flush=True)
+        if fcsv:
+            fcsv.write(f"{w},well-focus,{dx:.1f},{dy:.1f},{z - hz:.4f},stained {100 * dark:.1f}%\n")
+    if pts:
+        zz = [p[2] for p in pts]
+        print(f"  focused {len(pts)} of {len(FOCUS_SPOTS_9)} spots, "
+              f"range {1000 * (max(zz) - min(zz)):.0f} um", flush=True)
+    return pts
+
+
+def fit_surface(pts):
+    """Height z(dx, dy) through the focused spots: a gently curved surface (tilt plus
+    a bowl or dome, possibly lopsided) with 7+ spots, a flat tilted plane with fewer.
+    One spot that disagrees by > 30 um is dropped. Never predicts outside the
+    measured heights +-60 um, so it can't bend away past the outer spots."""
+    P = np.array(pts, float)
+    curved = len(P) >= 7
+
+    def design(x, y):
+        cols = [np.ones_like(x), x, y]
+        if curved:
+            cols += [x * x, y * y, x * y]
+        return np.stack(cols, -1)
+
+    keep = np.ones(len(P), bool)
+    for _ in range(2):
+        coef = np.linalg.lstsq(design(P[keep, 0], P[keep, 1]), P[keep, 2], rcond=None)[0]
+        res = np.abs(design(P[:, 0], P[:, 1]) @ coef - P[:, 2])
+        worst = int(np.argmax(np.where(keep, res, -1)))
+        if res[worst] > 0.03 and keep.sum() > (7 if curved else 4):
+            keep[worst] = False
+        else:
+            break
+    lo, hi = P[keep, 2].min() - 0.06, P[keep, 2].max() + 0.06
+
+    def z_at(dx, dy):
+        z = float(design(np.array([float(dx)]), np.array([float(dy)]))[0] @ coef)
+        return min(max(z, lo), hi)
+    return z_at
+
+
 def focus_well(s, cam, w, home, guess, a, zmin, zmax, fcsv=None):
     """--map-each-well: focus 7 spots in this well (centre + 6 at 12 mm) just before
     scanning it. Each spot first looks nearby for cells to focus on (sparse plates).
@@ -1324,46 +1403,42 @@ def scan(a, wells, size):
                 if wi > 0:
                     print(f"\n{w}:")
                 order = tiles
-                if a.map_each_well:                # spiral from the middle, focus tracked as it goes
-                    order = spiral_order(tiles, sx, sy)
+                if a.map_each_well:                # 9 focus spots -> curved surface, then photos
                     tf = time.time()
-                    print("  focus: looking for cells near the middle...", flush=True)
+                    pts = []
                     for attempt in range(2):
                         try:
-                            zfound, where = find_focus_spiral(s, cam, cx, cy, order, z_track[0],
-                                                              a, zmin, zmax, hz,
-                                                              anchored=well_ok)
+                            pts = measure_well(s, cam, w, home, z_track[0], a, zmin, zmax,
+                                               anchored=well_ok, fcsv=fcsv)
                             break
                         except GrblStopped as e:
                             recoveries += 1
-                            print(f"  GRBL stopped while finding focus ({e}); re-homing", flush=True)
+                            print(f"  GRBL stopped while focusing ({e}); re-homing", flush=True)
                             if recoveries > MAX_RECOVER or attempt:
                                 raise
                             recover(s, home)
-                    t_focus += time.time() - tf
-                    if zfound is None:
-                        print(f"  focused: WARNING nothing to focus on found; using Z "
-                              f"{z_track[0] - hz:.3f} mm (last good height)", flush=True)
-                    else:
-                        z_track[0] = zfound
+                    surf_w = None
+                    if len(pts) >= 3:
+                        surf_w = fit_surface(pts)
+                        z_track[0] = float(np.median([p[2] for p in pts]))
                         well_ok = True
-                        fcsv.write(f"{w},start-focus,{where[0]:.2f},{where[1]:.2f},"
-                                   f"{zfound - hz:.4f},\n")
+                    else:                          # sparse well: find any cells, focus there
+                        zfound, where = find_focus_spiral(s, cam, cx, cy,
+                                                          spiral_order(tiles, sx, sy), z_track[0],
+                                                          a, zmin, zmax, hz, anchored=well_ok)
+                        if zfound is None:
+                            print(f"  focused: WARNING nothing to focus on; using Z "
+                                  f"{z_track[0] - hz:.3f} mm (last good height)", flush=True)
+                        else:
+                            z_track[0] = zfound
+                            well_ok = True
+                    t_focus += time.time() - tf
                     since, refocused, zs_seen = 0, 0, [z_track[0]]
                     prev = (0.0, 0.0)
-                    # every focus found in this well; with 3+ spread out, the photo height
-                    # comes from the plane through them (the plate's tilt), else the last one
-                    fpts = [(where[0], where[1], zfound)] if zfound is not None else []
+                    fpts = []
 
-                    def base(dx, dy, fpts=fpts):
-                        if len(fpts) >= 3:
-                            P = np.array(fpts)
-                            A = np.c_[np.ones(len(P)), P[:, 0], P[:, 1]]
-                            if np.ptp(P[:, 0]) > 4 and np.ptp(P[:, 1]) > 4:
-                                coef = np.linalg.lstsq(A, P[:, 2], rcond=None)[0]
-                                if abs(coef[1]) <= TILT_MAX and abs(coef[2]) <= TILT_MAX:
-                                    return float(coef[0] + coef[1] * dx + coef[2] * dy)
-                        return z_track[0]
+                    def base(dx, dy, sw=surf_w):
+                        return sw(dx, dy) if sw is not None else z_track[0]
                 elif surf:
                     corr = check_plane(s, cam, surf, w, home, corr, a, zmin, zmax, fcsv,
                                        mp["points"])
@@ -1394,13 +1469,17 @@ def scan(a, wells, size):
                             img = grab(cam)
                             name = f"{w}_{i:04d}.jpg"
                             writer.put(os.path.join(folder, name), img)
-                            dark, q = tile_quality(img)
+                            if a.map_each_well and a.refocus_every <= 0:
+                                dark, q = None, CHECK.submit(tile_quality, img)   # in the background
+                            else:
+                                dark, q = tile_quality(img)
                             if a.map_each_well:            # refocus about every 10th photo with cells
                                 since += 1
                                 if math.hypot(dx - prev[0], dy - prev[1]) > 2.5 * max(sx, sy):
                                     since = a.refocus_every    # long jump across the well: refocus soon
                                 prev = (dx, dy)
-                                if since >= a.refocus_every and dark >= CONTENT_GOOD:
+                                if a.refocus_every > 0 and since >= a.refocus_every \
+                                        and dark is not None and dark >= CONTENT_GOOD:
                                     since = 0
                                     zl = fine_focus(s, cam, z, zmin, zmax)
                                     if zl is not None:
@@ -1434,9 +1513,10 @@ def scan(a, wells, size):
                         print(f"  {taken}/{total}  {el / 60:4.1f} min, "
                               f"~{el / taken * (total - taken) / 60:.1f} min left", flush=True)
 
-                if a.map_each_well:
+                if a.map_each_well and a.refocus_every > 0:
                     print(f"  refocused {refocused} times while scanning, focus range "
                           f"{1000 * (max(zs_seen) - min(zs_seen)):.0f} um", flush=True)
+                done = [d if d[7] is not None else d[:7] + tuple(d[8].result()) for d in done]
                 # ---- blur check: re-shoot only the photos that came out soft
                 cont = [d for d in done if d[7] >= CONTENT_MIN
                         and inside_fraction(d[1], d[2], fx, fy) >= 0.4]   # mostly in the well
@@ -1570,8 +1650,9 @@ def main():
     p.add_argument("--map-each-well", action="store_true",
                    help="per well: find focus spiralling out from the middle, photograph in a "
                         "spiral, refocus every --refocus-every photos that have cells (no map needed)")
-    p.add_argument("--refocus-every", type=int, default=10,
-                   help="with --map-each-well: refocus after this many photos (default 10)")
+    p.add_argument("--refocus-every", type=int, default=0,
+                   help="with --map-each-well: also refocus after this many photos "
+                        "(default 0 = never: the 9-spot surface was as sharp, and much faster)")
     p.add_argument("--check-points", type=int, default=5, choices=(5, 7),
                    help="focus check points per well (default 5)")
     p.add_argument("--reshoot-max", type=float, default=RESHOOT_MAX,

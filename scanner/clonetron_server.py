@@ -110,10 +110,10 @@ MAP_FILE = os.path.join(config.SCANS_DIR, "focus_map.json")
 CAMERA_FILE = os.path.join(config.SCANS_DIR, "camera.json")
 FLAT_FILE = os.path.join(config.SCANS_DIR, "flat.npy")
 OFFSETS_FILE = os.path.join(config.SCANS_DIR, "well_offsets.json")
-MAP_MIN_PER_WELL = 1.5     # 7-spot focus at the start of every well
+MAP_MIN_PER_WELL = 1.0     # 9-spot focus at the start of every well
 PHOTOS_PER_WELL = 213          # 35 mm well, 3.2 x 2.4 mm photos, 10% overlap
 MB_PER_PHOTO = 1.3             # JPEG at quality 95 is ~0.8-1.1 MB; extra for re-shoots
-MIN_PER_WELL = 4.0             # rough time per well with the focus map and blur check
+MIN_PER_WELL = 2.6             # ~213 photos at ~0.7 s, plus the blur check (survey 2026-11-27)
 PROGRESS_RE = re.compile(r"^\s*(\d+)/(\d+)\s+([\d.]+) min, ~([\d.]+) min left")
 
 
@@ -532,7 +532,7 @@ class App:
         "scan": ("Scanning", ["plate_scan.py"]),
     }
     MAP_SPOTS_PER_WELL = 19
-    FOCUS_SPOTS_PER_WELL = 7                      # plate_scan.py --map-each-well
+    FOCUS_SPOTS_PER_WELL = 9                      # plate_scan.py --map-each-well
 
     def start_job(self, kind, opts):
         if kind not in self.JOBS:

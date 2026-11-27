@@ -146,7 +146,7 @@ function showJob(d) {
   const focusing = active && p.step === 'focus' && !p.packing;
   const pct = total ? Math.round(100 * p.taken / total) : 0;
   $('pPhase').textContent = p.packing ? 'packing into one file' : !active ? '–'
-    : focusing ? `finding focus${p.focus_done ? ' (try ' + p.focus_done + ')' : ''}` : 'taking photos';
+    : focusing ? `focusing ${Math.min(p.focus_done || 0, p.focus_total || 9)} / ${p.focus_total || 9} spots` : 'taking photos';
   $('jobTitle').textContent = j.title;
   $('jobStarted').textContent = 'Started ' + j.started;
   $('pct').innerHTML = `${j.status === 'done' ? 100 : pct}<small>%</small>`;
