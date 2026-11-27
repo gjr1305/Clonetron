@@ -1062,6 +1062,43 @@ def find_cells(s, cam, cx, cy, dx, dy, a):
     return best
 
 
+def spiral_order(tiles, sx, sy):
+    """The well's photo positions from the middle outwards, ring by ring, going
+    round each ring, so each photo is next to the last and focus changes slowly."""
+    def key(t):
+        dx, dy = t
+        ring = max(abs(round(dx / sx)), abs(round(dy / sy)))
+        ang = math.atan2(dy, dx) % (2 * math.pi)
+        return ring, ang
+    return sorted(tiles, key=key)
+
+
+def find_focus_spiral(s, cam, cx, cy, order, z_guess, a, zmin, zmax, hz, tries=8):
+    """Walk the spiral from the middle without taking photos, looking for stained
+    cells (blurred colonies still show as dark); autofocus at the first places
+    that have some. Returns (z, (dx, dy)) or (None, None)."""
+    attempts = 0
+    for dx, dy in order:
+        move(s, cx + dx, cy + dy, a.feed)
+        dark, _ = tile_quality(grab(cam))
+        if dark < CONTENT_GOOD:
+            continue
+        attempts += 1
+        print(f"  focus try {attempts} at ({dx:+.1f},{dy:+.1f}) mm, "
+              f"{100 * dark:.0f}% stained", flush=True)
+        z, _ = autofocus(s, cam, z_guess, zmin, zmax)
+        if z is None:                              # cells here but focus far off: look wider
+            zs, v = sweep(s, cam, z_guess, 1.5, 0.1, zmin, zmax)
+            if len(zs) >= 3 and v.max() / max(np.median(v), 1e-6) >= 1.15:
+                z, _ = autofocus(s, cam, float(peak(zs, v)[0]), zmin, zmax)
+        if z is not None:
+            print(f"  focused at Z {z - hz:.3f} mm", flush=True)
+            return z, (dx, dy)
+        if attempts >= tries:
+            break
+    return None, None
+
+
 def focus_well(s, cam, w, home, guess, a, zmin, zmax, fcsv=None):
     """--map-each-well: focus 7 spots in this well (centre + 6 at 12 mm) just before
     scanning it. Each spot first looks nearby for cells to focus on (sparse plates).
@@ -1176,7 +1213,8 @@ def scan(a, wells, size):
             offset = first_offset or 0.0
             move_z(s, hz + surf(*c0) + offset)
         corr = (offset, 0.0, 0.0)
-        well_plane = (z_fixed, 0.0, 0.0)          # --map-each-well: first guess, then carried over
+        well_plane = (z_fixed, 0.0, 0.0)          # (older 7-spot mode, unused)
+        z_track = [z_fixed]                        # --map-each-well: current focus, carried well to well
 
         calib = calibrate(s, cam, size) if a.calibrate else load_calib()
         if calib and calib.get("slack_mm"):
@@ -1214,15 +1252,36 @@ def scan(a, wells, size):
                             corr[1], corr[2])
                 if wi > 0:
                     print(f"\n{w}:")
-                if a.map_each_well:
+                order = tiles
+                if a.map_each_well:                # spiral from the middle, focus tracked as it goes
+                    order = spiral_order(tiles, sx, sy)
                     tf = time.time()
-                    res = focus_well(s, cam, w, home, well_plane, a, zmin, zmax, fcsv)
+                    print("  focus: looking for cells near the middle...", flush=True)
+                    zfound, where = find_focus_spiral(s, cam, cx, cy, order, z_track[0],
+                                                      a, zmin, zmax, hz)
                     t_focus += time.time() - tf
-                    if res is None:
-                        print("  WARNING: nothing sharp in this well; using the last well's height")
+                    if zfound is None:
+                        print(f"  focused: WARNING nothing to focus on found; using Z "
+                              f"{z_track[0] - hz:.3f} mm (last good height)", flush=True)
                     else:
-                        well_plane = res
-                    base = lambda dx, dy, p=well_plane: p[0] + p[1] * dx + p[2] * dy
+                        z_track[0] = zfound
+                        fcsv.write(f"{w},start-focus,{where[0]:.2f},{where[1]:.2f},"
+                                   f"{zfound - hz:.4f},\n")
+                    since, refocused, zs_seen = 0, 0, [z_track[0]]
+                    prev = (0.0, 0.0)
+                    # every focus found in this well; with 3+ spread out, the photo height
+                    # comes from the plane through them (the plate's tilt), else the last one
+                    fpts = [(where[0], where[1], zfound)] if zfound is not None else []
+
+                    def base(dx, dy, fpts=fpts):
+                        if len(fpts) >= 3:
+                            P = np.array(fpts)
+                            A = np.c_[np.ones(len(P)), P[:, 0], P[:, 1]]
+                            if np.ptp(P[:, 0]) > 4 and np.ptp(P[:, 1]) > 4:
+                                coef = np.linalg.lstsq(A, P[:, 2], rcond=None)[0]
+                                if abs(coef[1]) <= TILT_MAX and abs(coef[2]) <= TILT_MAX:
+                                    return float(coef[0] + coef[1] * dx + coef[2] * dy)
+                        return z_track[0]
                 elif surf:
                     corr = check_plane(s, cam, surf, w, home, corr, a, zmin, zmax, fcsv,
                                        mp["points"])
@@ -1235,7 +1294,7 @@ def scan(a, wells, size):
                     base = lambda dx, dy, zf=z_fixed: zf
                 zf = FocusMap(base)
                 done = []                          # (i, dx, dy, x, y, z, name, dark, q)
-                for i, (dx, dy) in enumerate(tiles):
+                for i, (dx, dy) in enumerate(order):
                     x, y = cx + dx, cy + dy
                     move(s, x, y, a.feed)
                     z = zf(dx, dy)
@@ -1252,6 +1311,28 @@ def scan(a, wells, size):
                     name = f"{w}_{i:04d}.jpg"
                     writer.put(os.path.join(folder, name), img)
                     dark, q = tile_quality(img)
+                    if a.map_each_well:            # refocus about every 10th photo with cells
+                        since += 1
+                        if math.hypot(dx - prev[0], dy - prev[1]) > 2.5 * max(sx, sy):
+                            since = a.refocus_every    # long jump across the well: refocus soon
+                        prev = (dx, dy)
+                        if since >= a.refocus_every and dark >= CONTENT_GOOD:
+                            since = 0
+                            zl = fine_focus(s, cam, z, zmin, zmax)
+                            if zl is not None:
+                                refocused += 1
+                                zs_seen.append(zl)
+                                if abs(zl - z) > 0.02:     # moved noticeably: retake this one
+                                    move_z(s, zl)
+                                    time.sleep(a.settle)
+                                    img = grab(cam)
+                                    writer.put(os.path.join(folder, name), img)
+                                    dark, q = tile_quality(img)
+                                    fcsv.write(f"{w},refocus,{dx:.2f},{dy:.2f},{zl - hz:.4f},"
+                                               f"{1000 * (zl - z):+.0f} um, photo retaken\n")
+                                    z = zl
+                                z_track[0] = zl
+                                fpts.append((dx, dy, zl))
                     done.append((i, dx, dy, x, y, z, name, dark, q))
                     csv.write(f"{name},{w},{x:.3f},{y:.3f},{z:.4f}\n")
                     csv.flush()
@@ -1261,6 +1342,9 @@ def scan(a, wells, size):
                         print(f"  {taken}/{total}  {el / 60:4.1f} min, "
                               f"~{el / taken * (total - taken) / 60:.1f} min left", flush=True)
 
+                if a.map_each_well:
+                    print(f"  refocused {refocused} times while scanning, focus range "
+                          f"{1000 * (max(zs_seen) - min(zs_seen)):.0f} um", flush=True)
                 # ---- blur check: re-shoot only the photos that came out soft
                 cont = [d for d in done if d[7] >= CONTENT_MIN
                         and inside_fraction(d[1], d[2], fx, fy) >= 0.4]   # mostly in the well
@@ -1385,7 +1469,10 @@ def main():
                         "well_offsets.json exists; the well itself is 17.4)")
     p.add_argument("--stitch", action="store_true", help="also stitch on the Pi (slow)")
     p.add_argument("--map-each-well", action="store_true",
-                   help="focus 7 spots in each well right before scanning it (no saved map needed)")
+                   help="per well: find focus spiralling out from the middle, photograph in a "
+                        "spiral, refocus every --refocus-every photos that have cells (no map needed)")
+    p.add_argument("--refocus-every", type=int, default=10,
+                   help="with --map-each-well: refocus after this many photos (default 10)")
     p.add_argument("--check-points", type=int, default=5, choices=(5, 7),
                    help="focus check points per well (default 5)")
     p.add_argument("--reshoot-max", type=float, default=RESHOOT_MAX,
