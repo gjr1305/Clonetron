@@ -206,6 +206,7 @@ Z_FEED = 200                           # mm/min for focus moves
 BACKLASH = 0.50                        # mm: Z always finishes moving upwards from this far below
 TILT_R = 11.0                          # mm from the well centre for the 4 tilt-check points
 TILT_MAX = 0.02                        # mm per mm: ignore tilt fits steeper than this (20 um/mm)
+ANCHOR_MM = 0.20                       # a later well's focus must be this close to the last one's
 MAX_RECOVER = 5                        # GRBL restarts/alarms a scan re-homes after before giving up
 OUTPUT_ROTATE = 180                    # degrees; camera was turned 180 on 2026-11-23
 MAP_SPOTS = [(0.0, 0.0)] + [                 # centre, inner ring (8 mm), outer ring (14 mm)
@@ -443,13 +444,18 @@ def move_z(s, z):
     _zpos[0] = z
 
 
-def sharpness(cam):
+def sharpness(cam, fine=False):
     """Cell-sized detail in the middle of the picture (band-pass). A plain
     Laplacian is mostly sensor noise, nearly the same in and out of focus, so a
     search starting 0.5 mm off couldn't see which way focus was (2026-11-27)."""
     g = focus_image(cam).astype(np.float32)
     h, w = g.shape[:2]
     g = g[h // 5: 4 * h // 5, w // 5: 4 * w // 5]
+    if fine:
+        # finest detail (cell edges), pixel noise smoothed away first. Peaks sharply at
+        # true focus; the band-pass below can peak a little off focus on big dense
+        # colonies (brightfield edges look most contrasty slightly defocused)
+        return float(cv2.Laplacian(cv2.GaussianBlur(g, (0, 0), 1.0), cv2.CV_32F).var())
     return float((cv2.GaussianBlur(g, (0, 0), 1.5) - cv2.GaussianBlur(g, (0, 0), 6)).var())
 
 
@@ -464,14 +470,14 @@ def peak(zs, vals):
     return zs[i], i
 
 
-def sweep(s, cam, centre, half, step, zmin, zmax):
+def sweep(s, cam, centre, half, step, zmin, zmax, fine=False):
     zs = np.arange(centre - half, centre + half + step / 2, step)
     zs = zs[(zs >= zmin) & (zs <= zmax)]
     vals = []
     for z in zs:                                   # always upwards
         move_z(s, float(z))
         time.sleep(0.05)
-        vals.append(sharpness(cam))
+        vals.append(sharpness(cam, fine))
     return zs, np.array(vals)
 
 
@@ -489,7 +495,7 @@ def autofocus(s, cam, z_start, zmin, zmax):
     ratio = float(v.max() / max(np.median(v), 1e-6))
     if ratio < 1.15:
         return None, ratio
-    zs, v = sweep(s, cam, best, 0.06, 0.015, zmin, zmax)   # fine
+    zs, v = sweep(s, cam, best, 0.06, 0.015, zmin, zmax, fine=True)   # fine, on cell edges
     best, _ = peak(zs, v)
     return float(best), ratio
 
@@ -507,6 +513,9 @@ def fine_focus(s, cam, z_pred, zmin, zmax):
         centre = zs[i]                             # sharpest at the edge: look further
     if v.max() / max(np.median(v), 1e-6) < 1.08:
         return None
+    zs, v = sweep(s, cam, best, 0.045, 0.015, zmin, zmax, fine=True)   # settle it on cell edges
+    if len(zs) >= 3:
+        best = peak(zs, v)[0]
     return float(best)
 
 
@@ -1118,7 +1127,7 @@ def spiral_order(tiles, sx, sy):
     return sorted(tiles, key=key)
 
 
-def find_focus_spiral(s, cam, cx, cy, order, z_guess, a, zmin, zmax, hz, tries=8):
+def find_focus_spiral(s, cam, cx, cy, order, z_guess, a, zmin, zmax, hz, tries=8, anchored=False):
     """Walk the spiral from the middle without taking photos, looking for stained
     cells (blurred colonies still show as dark); autofocus at the first places
     that have some. Returns (z, (dx, dy)) or (None, None)."""
@@ -1131,8 +1140,23 @@ def find_focus_spiral(s, cam, cx, cy, order, z_guess, a, zmin, zmax, hz, tries=8
         attempts += 1
         print(f"  focus try {attempts} at ({dx:+.1f},{dy:+.1f}) mm, "
               f"{100 * dark:.0f}% stained", flush=True)
+        if anchored:                               # a well before this one focused: plates are
+            z = fine_focus(s, cam, z_guess, zmin, zmax)   # flat to ~0.2 mm, so look near it
+            if z is not None and abs(z - z_guess) > ANCHOR_MM:
+                print(f"  (found {z - hz:.3f} mm, too far from the last well; trying elsewhere)",
+                      flush=True)
+                z = None
+            if z is not None:
+                print(f"  focused at Z {z - hz:.3f} mm", flush=True)
+                return z, (dx, dy)
+            if attempts < tries // 2:
+                continue                           # try a few other places before a full search
         z, _ = autofocus(s, cam, z_guess, zmin, zmax)
-        if z is None:                              # cells here but focus far off: look wider
+        if anchored and z is not None and abs(z - z_guess) > ANCHOR_MM:
+            print(f"  (full search found {z - hz:.3f} mm, too far from the last well; ignored)",
+                  flush=True)
+            z = None
+        if z is None and not anchored:             # cells here but focus far off: look wider
             zs, v = sweep(s, cam, z_guess, 1.5, 0.1, zmin, zmax)
             if len(zs) >= 3 and v.max() / max(np.median(v), 1e-6) >= 1.15:
                 z, _ = autofocus(s, cam, float(peak(zs, v)[0]), zmin, zmax)
@@ -1261,6 +1285,7 @@ def scan(a, wells, size):
         well_plane = (z_fixed, 0.0, 0.0)          # (older 7-spot mode, unused)
         z_track = [z_fixed]                        # --map-each-well: current focus, carried well to well
         recoveries = 0                             # GRBL restarts survived (MAX_RECOVER allowed)
+        well_ok = False                            # a well has focused: later wells search near it
 
         calib = calibrate(s, cam, size) if a.calibrate else load_calib()
         if calib and calib.get("slack_mm"):
@@ -1306,7 +1331,8 @@ def scan(a, wells, size):
                     for attempt in range(2):
                         try:
                             zfound, where = find_focus_spiral(s, cam, cx, cy, order, z_track[0],
-                                                              a, zmin, zmax, hz)
+                                                              a, zmin, zmax, hz,
+                                                              anchored=well_ok)
                             break
                         except GrblStopped as e:
                             recoveries += 1
@@ -1320,6 +1346,7 @@ def scan(a, wells, size):
                               f"{z_track[0] - hz:.3f} mm (last good height)", flush=True)
                     else:
                         z_track[0] = zfound
+                        well_ok = True
                         fcsv.write(f"{w},start-focus,{where[0]:.2f},{where[1]:.2f},"
                                    f"{zfound - hz:.4f},\n")
                     since, refocused, zs_seen = 0, 0, [z_track[0]]

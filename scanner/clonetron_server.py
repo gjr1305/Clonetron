@@ -805,6 +805,35 @@ def make_handler(app):
             with open(path, "rb") as f:
                 self._send(200, f.read(), TYPES.get(os.path.splitext(name)[1], "application/octet-stream"))
 
+        def _download(self, name):
+            """Send one .clonescan file from the stick to the browser, in chunks
+            (they are 1-2 GB). Only plain file names inside <stick>/Clonetron/."""
+            stick = usb.get(app.sim)
+            if not stick:
+                return self._send(404, {"error": "no USB stick"})
+            if (not name.endswith(".clonescan") or os.path.basename(name) != name
+                    or name.startswith(".")):
+                return self._send(400, {"error": "not a scan file"})
+            path = os.path.join(stick["mount"], usb.SCAN_SUBFOLDER, name)
+            if not os.path.isfile(path):
+                return self._send(404, {"error": "no such scan on the stick"})
+            size = os.path.getsize(path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            try:
+                with open(path, "rb") as f:
+                    while True:
+                        chunk = f.read(1 << 20)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass                                   # download cancelled in the browser
+
         def _token(self):
             c = SimpleCookie(self.headers.get("Cookie", ""))
             return c["ct"].value if "ct" in c else None
@@ -852,6 +881,9 @@ def make_handler(app):
                 return self._file("scan.js")
             if path == "/api/usb":
                 return self._send(200, app.usb_state())
+            if path == "/api/usb/download":
+                q = parse_qs(urlparse(self.path).query)
+                return self._download((q.get("name", [""])[0]))
             if path == "/api/estimate":
                 q = parse_qs(urlparse(self.path).query)
                 return self._send(200, app.estimate((q.get("wells", [""])[0]).split(",")))

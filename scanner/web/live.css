@@ -282,3 +282,6 @@ body.login .stage { background: radial-gradient(90% 80% at 30% 30%, #2a1f7a 0%, 
   .logincard { position: relative; left: auto; top: auto; transform: none; width: 100%; margin-top: 18vh; }
   .platemap { max-width: 320px; margin: 0 auto; }
 }
+.recent .dl { align-self: flex-start; margin-top: 4px; font-size: 12px; font-weight: 600; color: #cbbcff; text-decoration: none;
+  border: 1px solid var(--edge); border-radius: 8px; padding: 6px 10px; }
+.recent .dl:hover { background: rgba(142,107,255,.15); color: #fff; }

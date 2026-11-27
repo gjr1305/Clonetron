@@ -83,7 +83,9 @@ function showUsb(u) {
         const what = r.packed ? (r.bad ? '<span class="warn">damaged file</span>'
                                        : `${r.photos} photos, ${r.mb >= 1000 ? (r.mb / 1000).toFixed(1) + ' GB' : r.mb + ' MB'}` + (r.complete ? '' : ', <span class="warn">stopped early</span>'))
                               : `${r.photos} photos, <span class="warn">still a folder</span>`;
-        return `<div class="recent" title="${r.name}"><b>${title}</b><span>${when} · ${what}</span></div>`;
+        const dl = r.packed && !r.bad
+          ? `<a class="dl" href="/api/usb/download?name=${encodeURIComponent(r.name)}" download>Download</a>` : '';
+        return `<div class="recent" title="${r.name}"><b>${title}</b><span>${when} · ${what}</span>${dl}</div>`;
       }).join('')
     : 'No scans yet.';
 }
