@@ -110,6 +110,7 @@ MAP_FILE = os.path.join(config.SCANS_DIR, "focus_map.json")
 CAMERA_FILE = os.path.join(config.SCANS_DIR, "camera.json")
 FLAT_FILE = os.path.join(config.SCANS_DIR, "flat.npy")
 OFFSETS_FILE = os.path.join(config.SCANS_DIR, "well_offsets.json")
+MAP_MIN_PER_WELL = 1.5     # focus map made at the start of every scan
 PHOTOS_PER_WELL = 213          # 35 mm well, 3.2 x 2.4 mm photos, 10% overlap
 MB_PER_PHOTO = 1.3             # JPEG at quality 95 is ~0.8-1.1 MB; extra for re-shoots
 MIN_PER_WELL = 4.0             # rough time per well with the focus map and blur check
@@ -138,6 +139,7 @@ class App:
         self.fail = {}                            # ip -> (count, last time): slow down guessing
         self._last_pos = (0.0, 0.0, 0.0)
         self.job = None                           # {"kind", "status", "log", "proc", ...}
+        self.flat_done_at = None                  # flat-field done since this start? (required to scan)
         self.stage, self.cam, self.flat = hw.open_hardware(cfg, sim)
         if sim:
             os.makedirs(usb.SIM_ROOT, exist_ok=True)       # a pretend USB stick
@@ -408,6 +410,7 @@ class App:
                 "sharp": round(self.sharp, 1), "busy": self.busy.locked(),
                 "action": self.action, "sim": self.sim,
                 # a job has the camera: the page shows what it's doing until photos appear
+                "flat_since_start": self.flat_done_at,
                 "cam_busy": self.cam is None, "showing_photo": getattr(self, "_showing_photo", False),
                 "job_line": ((j or {}).get("log") or [""])[-1][:90] if self.cam is None else "",
                 "z_limit": self.cfg["z_limit_mm"], "lcd": self.lcd_lines,
@@ -426,6 +429,7 @@ class App:
             "camera": None if not cam else {"made": cam.get("made"),
                                             "exposure_ms": round(cam.get("ExposureTime", 0) / 1000, 2)},
             "flat": os.path.exists(FLAT_FILE), "offsets": sorted(offs),
+            "flat_since_start": self.flat_done_at,
         }
 
     @staticmethod
@@ -527,6 +531,7 @@ class App:
         "map": ("Making the focus map", ["plate_scan.py", "--make-map"]),
         "scan": ("Scanning", ["plate_scan.py"]),
     }
+    MAP_SPOTS_PER_WELL = 19
 
     def start_job(self, kind, opts):
         if kind not in self.JOBS:
@@ -546,44 +551,62 @@ class App:
             if wells:
                 argv += ["--wells", ",".join(wells)]
         scan_wells = []
+        argvs = [argv]
         if kind == "scan":
-            err, extra = self._scan_args(opts)
+            if not self.flat_done_at:
+                self.busy.release()
+                return ("do the flat-field calibration first: it's needed after every restart "
+                        "(plate out, light pad on)")
+            err, extra = self._scan_args(dict(opts, mode="map"))
             if err:
                 self.busy.release()
                 return err
-            argv = argv + extra
             title = "Scanning " + (opts.get("name") or "plate")
             scan_wells = extra[extra.index("--wells") + 1].split(",")
+            # every scan starts with a fresh focus map of the wells it's about to scan
+            z = float(self.cfg["z_default_mm"])
+            argvs = [["plate_scan.py", "--make-map", "--z", f"{z:.3f}", "--wells", ",".join(scan_wells)],
+                     argv + extra]
         if self.sim:
-            argv = ["sim_job.py", kind] + (argv[1:] if kind == "scan" else [])
+            argvs = [["sim_job.py", "map" if "--make-map" in a else kind] + a[1:] for a in argvs]
         self.action = title
         self.job = {"kind": kind, "title": title, "status": "running", "log": [],
                     "started": time.strftime("%H:%M:%S"), "proc": None, "code": None,
                     "progress": {"taken": 0, "total": None, "well": None, "left_min": None,
                                  "folder": None, "file": None, "packing": False,
+                                 "phase": "mapping", "map_done": 0,
+                                 "map_total": self.MAP_SPOTS_PER_WELL * len(scan_wells),
                                  "wells": scan_wells if kind == "scan" else []} if kind == "scan" else None}
-        threading.Thread(target=self._run_job, args=(argv,), daemon=True).start()
+        threading.Thread(target=self._run_job, args=(argvs,), daemon=True).start()
         return None
 
-    def _run_job(self, argv):
+    def _run_job(self, argvs):
+        """Run the scripts in argvs one after another (a scan is: focus map, then scan)."""
         j = self.job
         try:
             with self.cam_lock:                    # hand the hardware to the script
                 cam, self.cam = self.cam, None
             hw.close_hardware(self.stage, cam)
-            j["log"].append("$ python3 " + " ".join(argv))
-            proc = subprocess.Popen([sys.executable, "-u"] + argv, cwd=HERE, text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
-                                    preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
-            j["proc"] = proc
-            for line in proc.stdout:
-                line = line.rstrip()
-                if line:
-                    j["log"].append(line)
-                    del j["log"][:-400]
-                    if j.get("progress") is not None:
-                        self._parse_progress(j["progress"], line)
-            j["code"] = proc.wait()
+            for n, argv in enumerate(argvs):
+                p = j.get("progress")
+                if p is not None:
+                    p["phase"] = "mapping" if "map" in argv[:2] or "--make-map" in argv else "scanning"
+                    p["well"] = None
+                j["log"].append("$ python3 " + " ".join(argv))
+                proc = subprocess.Popen([sys.executable, "-u"] + argv, cwd=HERE, text=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+                                        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                j["proc"] = proc
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        j["log"].append(line)
+                        del j["log"][:-400]
+                        if p is not None:
+                            self._parse_progress(p, line)
+                j["code"] = proc.wait()
+                if j["code"] != 0 or j["status"] == "cancelling":
+                    break                          # don't scan if the map failed or Stop was pressed
             if j["status"] == "cancelling":
                 j["status"] = "cancelled"
             else:
@@ -593,6 +616,7 @@ class App:
                 p = j["progress"]
                 p["taken"], p["left_min"] = p.get("total") or p["taken"], 0
             if j["kind"] == "flatfield" and j["status"] == "done":
+                self.flat_done_at = time.strftime("%Y-%m-%d %H:%M")
                 self._calibration_to_stick(j["log"])
         except Exception as e:
             j["log"].append("Error: " + str(e))
@@ -614,6 +638,12 @@ class App:
 
     @staticmethod
     def _parse_progress(p, line):
+        if p.get("phase") == "mapping":
+            if re.fullmatch(r"[A-Z]{2}:", line.strip()):
+                p["well"] = line.strip()[:-1]
+            elif re.match(r"\s+\S.*(Z\s+-?[\d.]+ mm|skipped)", line):
+                p["map_done"] = min(p.get("map_done", 0) + 1, p.get("map_total") or 10 ** 6)
+            return
         m = PROGRESS_RE.match(line)
         if m:
             p["taken"], p["total"] = int(m[1]), int(m[2])
@@ -639,7 +669,7 @@ class App:
         # the photos sit in a folder until the scan ends and are then packed into one
         # .clonescan file, so for a moment the stick holds both: twice the space
         return {"photos": n * PHOTOS_PER_WELL, "mb": mb, "mb_needed": 2 * mb,
-                "minutes": round(n * MIN_PER_WELL + 1)}
+                "minutes": round(n * (MIN_PER_WELL + MAP_MIN_PER_WELL) + 1)}
 
     def _scan_args(self, opts):
         wells = [w for w in opts.get("wells", []) if w in self.cfg["wells_mm"]]
@@ -811,9 +841,7 @@ def make_handler(app):
                 return self._send(200, app.info())
             if path == "/api/job":
                 return self._send(200, app.job_state())
-            if path == "/setup":
-                return self._file("setup.html")
-            if path == "/scan":
+            if path in ("/setup", "/scan"):      # Setup was merged into Scan
                 return self._file("scan.html")
             if path == "/scan.js":
                 return self._file("scan.js")
@@ -822,8 +850,6 @@ def make_handler(app):
             if path == "/api/estimate":
                 q = parse_qs(urlparse(self.path).query)
                 return self._send(200, app.estimate((q.get("wells", [""])[0]).split(",")))
-            if path == "/setup.js":
-                return self._file("setup.js")
             if path == "/stream.mjpg":
                 return self._stream()
             if path == "/logout":

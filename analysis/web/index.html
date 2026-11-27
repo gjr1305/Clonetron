@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clonetron Analysis</title>
+<link rel="icon" href="/web/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/web/style.css">
+<link rel="stylesheet" href="/web/analysis.css"></head>
+<body class="analysis">
+
+<!-- the well picture, zoomable, with the colony outlines on top -->
+<div class="viewer" id="viewer" hidden>
+  <div class="pan" id="pan">
+    <img id="wellimg" alt="Stitched well" draggable="false">
+    <svg id="overlay" class="overlay"></svg>
+  </div>
+</div>
+<div class="emptybg" id="emptybg"></div>
+
+<div class="topbar glass">
+  <div class="brand"><b>Adelaide University</b><span>Clonetron Analysis</span></div>
+  <nav><a href="#" id="navScans" class="on">Scans</a><a href="#" id="navScan" hidden></a></nav>
+</div>
+<div class="topright">
+  <span id="jobchip" class="chip warn" hidden></span>
+</div>
+
+<!-- ============ scan library ============ -->
+<section class="library glass" id="library">
+  <div class="libhead">
+    <h1>Open a scan</h1>
+    <p class="help">Pick a <span class="mono">.clonescan</span> file from the scanner's USB stick or any folder. Results are saved next to it; the scan file is never changed.</p>
+  </div>
+  <div class="places" id="places"></div>
+  <div class="pathbar">
+    <button id="upBtn" title="Up one folder">Up</button>
+    <input id="pathInput" type="text" spellcheck="false" aria-label="Folder">
+    <button id="goBtn">Go</button>
+  </div>
+  <div class="listing" id="listing"></div>
+</section>
+
+<!-- ============ one scan ============ -->
+<aside class="dock left glass" id="plateDock" hidden>
+  <div class="dockhead"><h2 id="scanTitle">Scan</h2><span class="sub" id="scanSub"></span></div>
+  <div class="wellgrid" id="wellgrid"></div>
+  <div class="kv" id="plateKv"></div>
+  <button class="primary wide" id="analyseBtn">Stitch and count</button>
+  <details class="logdrawer" id="settingsBox"><summary>Counting settings</summary>
+    <div class="settings">
+      <div class="field"><label for="sens">Sensitivity <b id="sensV"></b></label>
+        <input type="range" id="sens" min="2" max="8" step="0.5"><p class="help">Lower finds fainter colonies (and more debris).</p></div>
+      <div class="field"><label for="minA">Smallest colony <b id="minAV"></b></label>
+        <input type="range" id="minA" min="0.01" max="0.5" step="0.01"><p class="help">Area in mm². 0.05 mm² is about 250 µm across, roughly 50 cells.</p></div>
+      <div class="field"><label for="joinU">Join cells closer than <b id="joinUV"></b></label>
+        <input type="range" id="joinU" min="20" max="300" step="10"><p class="help">Cells of one colony that sit further apart than this are counted as separate colonies. Raise it for cells that spread out (e.g. SB28).</p></div>
+      <button class="wide" id="recountBtn">Recount all wells</button>
+    </div>
+  </details>
+  <div class="row"><button id="exportBtn">Export CSV</button><button id="folderBtn">Results folder</button></div>
+  <button class="wide ghostbtn" id="freshBtn">Start over from scratch</button>
+  <p class="help" id="exportMsg"></p>
+</aside>
+
+<aside class="dock right glass" id="wellDock" hidden>
+  <div class="dockhead"><h2 id="wellTitle">Well</h2><span class="sub" id="wellSub"></span></div>
+  <div class="bigpct" id="wellCount">–</div>
+  <div class="kv" id="wellKv"></div>
+  <div class="field"><span class="lbl">Edit</span>
+    <div class="seg two" id="toolSeg"><button data-t="select" class="on">Select</button><button data-t="add">Add colony</button></div>
+  </div>
+  <p class="help" id="toolHelp"></p>
+  <div class="row"><button id="removeBtn" disabled>Remove</button><button id="undoBtn" disabled>Undo</button></div>
+  <label class="toggle">Checked by eye <input type="checkbox" id="reviewed"></label>
+  <label class="toggle">Show outlines <input type="checkbox" id="showOut" checked></label>
+  <button class="wide" id="recountWellBtn">Recount this well</button>
+</aside>
+
+<div class="hud glass" id="hud" hidden>
+  <div><small>Zoom</small><b id="hZoom">–</b></div>
+  <div><small>Position</small><b id="hPos">–</b></div>
+  <div><small>Colony</small><b id="hCol">–</b></div>
+  <div class="hudbtns"><button id="fitBtn">Fit</button><button id="oneBtn">1:1</button></div>
+</div>
+
+<div class="jobcard glass" id="jobcard" hidden>
+  <div class="head"><h2 id="jobTitle"></h2><span class="status" id="jobStatus"></span></div>
+  <div class="pbar"><div id="jobBar"></div></div>
+  <pre class="logbox" id="jobLog"></pre>
+</div>
+
+<script src="/web/analysis.js"></script>
+</body></html>

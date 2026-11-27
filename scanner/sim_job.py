@@ -105,6 +105,15 @@ try:
     print(f"[simulator] pretending to run {kind}", flush=True)
     if kind == "scan":
         fake_scan(sys.argv[2:])
+    elif kind == "map":                       # same lines plate_scan.py --make-map prints
+        ws = sys.argv[sys.argv.index("--wells") + 1].split(",") if "--wells" in sys.argv else ["BL", "BR"]
+        for w in ws:
+            print(f"\n{w}:", flush=True)
+            for i in range(19):
+                time.sleep(0.08)
+                print(f"  spot {i + 1:2d}       Z {19.58 + 0.002 * i:6.3f} mm", flush=True)
+            print("  19 spots, range 38 um", flush=True)
+        print(f"Focus map saved: {19 * len(ws)} spots (simulated)", flush=True)
     else:
         for line in steps.get(kind, ["working..."] * 5):
             time.sleep(0.6)

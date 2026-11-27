@@ -40,7 +40,7 @@ function show(d) {
   if (jb) {
     const running = d.job && (d.job.status === 'running' || d.job.status === 'cancelling');
     jb.style.display = running ? 'block' : 'none';
-    if (running) jb.innerHTML = `<b>${d.job.title}</b> is running, so the camera and stage are in use. <a href="${d.job.kind === 'scan' ? '/scan' : '/setup'}">See progress</a>`;
+    if (running) jb.innerHTML = `<b>${d.job.title}</b> is running, so the camera and stage are in use. <a href="/scan">See progress</a>`;
   }
   $('px').innerHTML = `${Math.abs(d.x).toFixed(2)} <small>${d.x < 0 ? 'left' : d.x > 0 ? 'right' : ''}</small>`;
   $('py').innerHTML = `${Math.abs(d.y).toFixed(2)} <small>${d.y > 0 ? 'towards you' : d.y < 0 ? 'away' : ''}</small>`;

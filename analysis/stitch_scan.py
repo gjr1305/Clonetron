@@ -187,6 +187,31 @@ def find_rim(canvas, r_px):
     return np.array([x, y]) / k, rr / k
 
 
+def rotate_point(x, y, W, H, deg):
+    """Where pixel (x, y) of a W x H image ends up after rotate(img, deg)."""
+    deg = int(deg) % 360
+    if deg == 90:
+        return H - 1 - y, x
+    if deg == 180:
+        return W - 1 - x, H - 1 - y
+    if deg == 270:
+        return y, W - 1 - x
+    return x, y
+
+
+def write_well_info(out, canvas, sc, M, rot):
+    """<well>_stitched.json next to the picture: its scale and where the well is in it,
+    so colony sizes come out in mm and the rim can be left out of the count."""
+    ppm = math.sqrt(abs(np.linalg.det(M))) * sc
+    H, W = canvas.shape[:2]
+    found = find_rim(canvas, WELL_RADIUS * ppm)
+    cx, cy = (found[0] if found is not None else (W / 2, H / 2))
+    cx, cy = rotate_point(float(cx), float(cy), W, H, rot)
+    with open(out[:-4] + ".json", "w") as f:
+        json.dump({"px_per_mm": round(ppm, 4), "centre_px": [round(cx, 1), round(cy, 1)],
+                   "rim_found": found is not None, "well_radius_mm": WELL_RADIUS}, f, indent=1)
+
+
 def well_offset(canvas, sc, mn, tiles, Q, M, w, h, centre):
     """How far (mm, machine X/Y) the camera must move so a photo is centred on the rim."""
     ppm = math.sqrt(abs(np.linalg.det(M)))
@@ -245,47 +270,59 @@ def stitch_folder(path, a):
     suggested = {}
     old = info.get("well_offsets_mm", {})
     centres = info.get("well_centres_machine_mm", {})
+    failed = []
     for wl in wells:
-        out = os.path.join(folder, f"{wl}_stitched.jpg")
-        tiles = [(r["file"], float(r["machine_x_mm"]),
-                  float(r["machine_y_mm"])) for r in rows if r["well"] == wl]
-        print(f" {wl}: {len(tiles)} photos")
-        P = tile_offsets(tiles, M)
-        Q = refine_offsets(tiles, P, w, h, flat, read) if not a.no_align else P
-        if a.redo or not os.path.exists(out):
-            canvas, sc, mn = render(tiles, Q, w, h, WELL_MAX, flat, read)
-            cv2.imwrite(out, rotate(canvas, rot), [cv2.IMWRITE_JPEG_QUALITY, 92])
-            print(f"   saved {os.path.basename(out)}")
-            centre = centres.get(wl)
-            if centre is None:                       # older scans: middle of the photo grid
-                xs, ys = [t[1] for t in tiles], [t[2] for t in tiles]
-                centre = [(min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2]
-            res = well_offset(canvas, sc, mn, tiles, Q, M, w, h, centre)
-            if res is not None and math.hypot(*res[0]) > 3.0:   # probably the next well's rim
-                res = None
-            if res is None:
-                print("   (couldn't find the well rim, no centre correction for this well)")
+        try:
+            out = os.path.join(folder, f"{wl}_stitched.jpg")
+            tiles = [(r["file"], float(r["machine_x_mm"]),
+                      float(r["machine_y_mm"])) for r in rows if r["well"] == wl]
+            print(f" {wl}: {len(tiles)} photos   [well {wells.index(wl) + 1}/{len(wells)}]", flush=True)
+            P = tile_offsets(tiles, M)
+            Q = refine_offsets(tiles, P, w, h, flat, read) if not a.no_align else P
+            if a.redo or not os.path.exists(out):
+                canvas, sc, mn = render(tiles, Q, w, h, WELL_MAX, flat, read)
+                cv2.imwrite(out, rotate(canvas, rot), [cv2.IMWRITE_JPEG_QUALITY, 92])
+                write_well_info(out, canvas, sc, M, rot)
+                print(f"   saved {os.path.basename(out)}")
+                centre = centres.get(wl)
+                if centre is None:                       # older scans: middle of the photo grid
+                    xs, ys = [t[1] for t in tiles], [t[2] for t in tiles]
+                    centre = [(min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2]
+                res = well_offset(canvas, sc, mn, tiles, Q, M, w, h, centre)
+                if res is not None and math.hypot(*res[0]) > 3.0:   # probably the next well's rim
+                    res = None
+                if res is None:
+                    print("   (couldn't find the well rim, no centre correction for this well)")
+                else:
+                    d, r_mm = res
+                    ox, oy = old.get(wl, [0.0, 0.0])
+                    # well_centre(): cx = hx - WELLS_x, cy = hy + WELLS_y
+                    new = [round(ox - d[0], 2), round(oy + d[1], 2)]
+                    suggested[wl] = new
+                    print(f"   rim found (radius {r_mm:.1f} mm): photos were "
+                          f"{math.hypot(*d):.2f} mm off the well centre")
             else:
-                d, r_mm = res
-                ox, oy = old.get(wl, [0.0, 0.0])
-                # well_centre(): cx = hx - WELLS_x, cy = hy + WELLS_y
-                new = [round(ox - d[0], 2), round(oy + d[1], 2)]
-                suggested[wl] = new
-                print(f"   rim found (radius {r_mm:.1f} mm): photos were "
-                      f"{math.hypot(*d):.2f} mm off the well centre")
-        else:
-            print(f"   {os.path.basename(out)} already there (use --redo to make it again)")
-        if ref is None:
-            ref = tiles[0]
-        Pp = tile_offsets([ref] + tiles, M)[1:]
-        all_tiles += tiles
-        all_offs.append(Q - Q[0] + Pp[0])
-    if len(wells) > 1 and not a.no_plate:
+                print(f"   {os.path.basename(out)} already there (use --redo to make it again)")
+            if ref is None:
+                ref = tiles[0]
+            Pp = tile_offsets([ref] + tiles, M)[1:]
+            all_tiles += tiles
+            all_offs.append(Q - Q[0] + Pp[0])
+        except Exception as e:                       # one bad well shouldn't stop the rest
+            failed.append(wl)
+            print(f"   {wl}: couldn't stitch this well ({type(e).__name__}: {e}); going on with the next",
+                  flush=True)
+    if len(wells) > 1 and not a.no_plate and all_offs:
         out = os.path.join(folder, "plate_stitched.jpg")
         if a.redo or not os.path.exists(out):
-            canvas, _, _ = render(all_tiles, np.vstack(all_offs), w, h, PLATE_MAX, flat, read)
-            cv2.imwrite(out, rotate(canvas, rot), [cv2.IMWRITE_JPEG_QUALITY, 92])
-            print(" saved plate_stitched.jpg")
+            try:
+                canvas, _, _ = render(all_tiles, np.vstack(all_offs), w, h, PLATE_MAX, flat, read)
+                cv2.imwrite(out, rotate(canvas, rot), [cv2.IMWRITE_JPEG_QUALITY, 92])
+                print(" saved plate_stitched.jpg")
+            except Exception as e:
+                print(f" couldn't make the whole-plate picture ({type(e).__name__}: {e})")
+    if failed:
+        print(f" NOT stitched: {', '.join(failed)} (see the messages above)")
     if suggested:
         for wl, v in old.items():
             suggested.setdefault(wl, v)

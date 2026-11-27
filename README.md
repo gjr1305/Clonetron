@@ -7,7 +7,7 @@ paraclones, and fits LQ survival curves. Every data point links back to its
 image, so any measurement can be checked and corrected by hand.
 
 > **Status: early development.** The scanner scripts work on our machine. The
-> browser control app and the analysis app are being built (see Roadmap).
+> browser control app works; the analysis app has its first version (see Roadmap).
 
 ## The machine
 
@@ -41,8 +41,12 @@ scanner/                 runs on the Pi
   focus_repeat_test.py   checks that autofocus gives the same answer each time
   tile_focus_chart.py    per-photo sharpness chart for a finished scan
 analysis/                runs on a laptop
+  Start Clonetron Analysis.bat   double-click to start the analysis app (Windows)
+  clonetron_analysis.py  the analysis app: open scans, stitch, count and check colonies
+  colonies.py            finds colonies in a stitched well
   clonescan.py           the .clonescan file format (shared with the Pi)
   stitch_scan.py         stitches a .clonescan file into well and plate images
+  web/                   the app's pages
 config/
   clonetron.example.json machine settings (well positions, focus height, ...)
 portable-test/           checks that a locked-down laptop can run the app
@@ -125,31 +129,59 @@ py scanner\clonetron_server.py --sim
 then open <http://127.0.0.1:8000>. The simulator draws a fake stained plate
 that is only sharp near Z = 19.6 mm, so the focus meter can be tried too.
 
-## Stitching on a laptop
+## Analysis on a laptop
+
+**Windows:** copy the `analysis` folder anywhere and double-click
+**Start Clonetron Analysis.bat**. The first time, it installs numpy and OpenCV
+for your Windows user (no admin rights; needs the internet, about a minute).
+A black window opens (keep it open) and the app opens in your browser.
+On a Mac or Linux: `pip install numpy opencv-python` then
+`python analysis/clonetron_analysis.py`.
+
+1. **Open a scan.** USB sticks with a `Clonetron` folder are listed at the top;
+   any other folder can be typed in or browsed to.
+2. **Stitch and count.** Removes the pink corners (flat-field), lines the
+   photos up into one picture per well, then finds the colonies.
+3. **Check each well.** Scroll to zoom, drag to move. Click a colony and press
+   Delete to remove it (it stays visible, dashed red, and isn't counted);
+   switch to *Add colony* and drag from a colony's centre to its edge to add one.
+   Ctrl+Z undoes. Tick *Checked by eye* when a well is done.
+4. **Export CSV.** `counts.csv` (one row per well) and `colonies.csv` (one row per
+   colony, with size in mm) go into the scan's results folder.
+
+Everything is saved in a `<scan name> results` folder next to the scan file,
+and edits are saved as you make them. The `.clonescan` file is never changed.
+Counting settings (sensitivity, smallest colony size) are under
+*Counting settings*; a recount keeps colonies you added by hand.
+
+**How colonies are found** (`colonies.py`): each pixel's darkness against the
+local background, a threshold set from the background noise, nearby stained
+cells joined into one colony, holes filled, then anything smaller than the
+minimum colony size (default 0.05 mm², about 50 cells) or outside the well is
+dropped. Two colonies that touch are counted as one; split them by removing
+the joined one and adding both by hand.
+
+Stitching alone, without the app:
 
 ```bash
-pip install numpy opencv-python
 python analysis/stitch_scan.py "E:\Clonetron\2026-11-26_101500_GL261_4Gy.clonescan"
 ```
-
-The pink corners are removed and the photos lined up; the stitched pictures go
-in a `<scan name> results` folder next to the file. The `.clonescan` file is
-never changed. Older scans saved as folders still work.
 
 ## Roadmap
 
 1. **Repo and settings file** (done)
 2. **Scanner app** (done: live view, jogging, focus tools, setup, USB scanning, start at boot, LCD status): browser control from any laptop on the network: live view,
    jog, focus, scan queue, saving to USB, password protected
-3. **Analysis core:** stitching, well and colony detection, cells per colony,
-   measurements table
+3. **Analysis core** (first version done: stitching, colony detection, hand
+   corrections, per-well and per-colony CSV). Still to come: splitting touching
+   colonies, cells per colony
 4. **Review screen:** clickable plots linked to the colony images, hand
    corrections with a change log
 5. **Clone types and survival:** holo/mero/paraclone classification, PE, SF and
    linear-quadratic fits for all colonies and per clone type
 
-The analysis app will run on Windows from a copied folder, without installing
-anything.
+The analysis app runs on Windows from a copied folder; the only thing it
+installs is numpy and OpenCV, for the current user, on first start.
 
 ## Credits
 

@@ -13,7 +13,7 @@
 
 <div class="topbar glass">
   <div class="brand"><b>Adelaide University</b><span>Clonetron</span></div>
-  <nav><a href="/">Live</a><a href="/scan" class="on">Scan</a><a href="/setup">Setup</a></nav>
+  <nav><a href="/">Live</a><a href="/scan" class="on">Scan</a></nav>
 </div>
 <div class="topright">
   <span id="sim" class="chip sim" hidden>Simulator</span>
@@ -36,6 +36,21 @@
 </aside>
 
 <!-- right: new scan form / progress -->
+<!-- step 1 after every restart: flat-field -->
+<aside class="dock right glass" id="flatCard" hidden>
+  <div class="dockhead"><h2>Step 1: flat-field</h2><span class="sub">Needed once after every restart</span></div>
+  <p class="help">Makes the background of every photo evenly white. Takes about a minute.</p>
+  <ol class="steps-list">
+    <li>Take the plate <b>out</b></li>
+    <li>Light pad <b>on</b>, at scanning brightness</li>
+    <li>Close the lid</li>
+  </ol>
+  <button class="primary wide" id="ffBtn">Calibrate, plate is out</button>
+  <div class="status" id="ffStatus" hidden></div>
+  <p class="help mono" id="ffLine"></p>
+  <p class="help" id="ffLast"></p>
+</aside>
+
 <aside class="dock right glass" id="formCard">
   <div class="dockhead"><h2>New scan</h2><span class="sub">Saved to the USB stick only</span></div>
   <div class="field">
@@ -43,14 +58,8 @@
     <input id="name" type="text" maxlength="40" placeholder="GL261_4Gy_rep2" autocomplete="off">
     <p class="help">Letters, numbers, - and _. The scan is saved as one file named with the date, time and this name.</p>
   </div>
-  <div class="field">
-    <span class="lbl">Focus</span>
-    <div class="seg two" id="modeSeg">
-      <button data-m="map" class="on">Focus map</button>
-      <button data-m="focus-once">Focus once</button>
-    </div>
-    <p class="help" id="modeHelp">Uses the saved focus map, checks 5 spots per well.</p>
-  </div>
+  <p class="help okline" id="flatOk"></p>
+  <p class="help">Each scan first maps the focus of the chosen wells (about 1.5 min per well), then scans them.</p>
   <label class="toggle">Re-shoot blurry photos <input type="checkbox" id="reshoot" checked></label>
   <div class="est" id="est">–</div>
   <button class="primary wide" id="startBtn" disabled>Start scan</button>
@@ -62,8 +71,9 @@
   <div class="bigpct" id="pct">0<small>%</small></div>
   <div class="pbar"><div id="bar"></div></div>
   <div class="kv">
+    <span>Step</span><span id="pPhase">–</span>
     <span>Well</span><span id="pWell">–</span>
-    <span>Photos</span><span id="pPhotos">–</span>
+    <span id="pPhotosL">Photos</span><span id="pPhotos">–</span>
     <span>Time left</span><span id="pLeft">–</span>
     <span>Status</span><span id="jobStatus">–</span>
   </div>

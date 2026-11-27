@@ -1,6 +1,6 @@
 // Clonetron Scan: pick wells on the plate map, start a scan to USB, watch it fill in.
 const $ = id => document.getElementById(id);
-let info = null, usbInfo = null, running = false, mode = 'map', showingResult = false;
+let info = null, usbInfo = null, running = false, showingResult = false, flatAt = null, ffRunning = false;
 const chosen = new Set();
 
 async function getJSON(url) {
@@ -26,15 +26,7 @@ function paintChoice() { map.names().forEach(w => map.mark(w, chosen.has(w) ? 's
 $('allBtn').onclick = () => { map.names().forEach(w => chosen.add(w)); paintChoice(); refreshForm(); };
 $('noneBtn').onclick = () => { chosen.clear(); paintChoice(); refreshForm(); };
 
-// ---- focus mode
-document.querySelectorAll('#modeSeg button').forEach(b => b.onclick = () => {
-  mode = b.dataset.m;
-  document.querySelectorAll('#modeSeg button').forEach(x => x.classList.toggle('on', x === b));
-  $('modeHelp').textContent = mode === 'map'
-    ? 'Uses the saved focus map, checks 5 spots per well.'
-    : 'One autofocus per well. No map needed, fastest.';
-  refreshForm();
-});
+const mode = 'map';            // every scan maps the focus first
 
 function orderedWells() { return (info ? info.order : []).filter(w => chosen.has(w)); }
 
@@ -44,7 +36,7 @@ async function refreshForm() {
   const usbOk = usbInfo && usbInfo.stick && usbInfo.stick.writable;
   if (!wells.length) why = 'Choose at least one well on the plate.';
   else if (!usbOk) why = 'Plug a USB stick into the Pi. Scans are only saved to USB.';
-  else if (mode === 'map' && info && !info.map) why = 'No focus map yet. Make one in Setup, or use Focus once.';
+  if (!flatAt && !why) why = 'Do the flat-field first (step 1).';
   if (wells.length) {
     const e = await getJSON('/api/estimate?wells=' + wells.join(','));
     $('est').innerHTML = `${wells.length} well${wells.length > 1 ? 's' : ''} &nbsp; ~${e.photos} photos<br>~${e.minutes} min &nbsp; ~${(e.mb / 1000).toFixed(1)} GB`;
@@ -57,7 +49,7 @@ async function refreshForm() {
 $('startBtn').onclick = async () => {
   $('startBtn').disabled = true;
   const d = await post('/api/job/start', {kind: 'scan', name: $('name').value.trim(), wells: orderedWells(),
-                                           mode, reshoot: $('reshoot').checked});
+                                           reshoot: $('reshoot').checked});
   if (d.error) { $('why').textContent = d.error; $('startBtn').disabled = false; return; }
   poll();
 };
@@ -103,9 +95,40 @@ $('ejectBtn').onclick = async () => {
 };
 $('simPlugBtn').onclick = async () => { showUsb(await post('/api/usb/simplug')); refreshForm(); };
 
+// ---- step 1: flat-field after every restart
+function showFlat(st, j) {
+  if (st.flat_since_start !== flatAt) {
+    flatAt = st.flat_since_start;
+    getJSON('/api/info').then(i => { info = i; refreshForm(); });
+  }
+  const ff = j && j.kind === 'flatfield' ? j : null;
+  ffRunning = !!(ff && (ff.status === 'running' || ff.status === 'cancelling'));
+  const scanActive = j && j.kind === 'scan' && (j.status === 'running' || j.status === 'cancelling');
+  const needFlat = !flatAt && !scanActive && !showingResult;
+  $('flatCard').hidden = !needFlat;
+  if (needFlat) $('formCard').hidden = true;
+  $('ffBtn').disabled = ffRunning;
+  $('ffBtn').textContent = ffRunning ? 'Calibrating…' : (ff && ff.status === 'failed' ? 'Try again, plate is out' : 'Calibrate, plate is out');
+  $('ffStatus').hidden = !ff;
+  if (ff) {
+    $('ffStatus').textContent = {running: 'calibrating', cancelling: 'stopping…', done: 'done', failed: 'problem', cancelled: 'stopped'}[ff.status] || ff.status;
+    $('ffStatus').className = 'status ' + ({done: 'ok', failed: 'bad', cancelled: 'bad'}[ff.status] || 'warn');
+    $('ffLine').textContent = (d => d[d.length - 1] || '')(ffLog);
+  }
+  $('ffLast').textContent = info && info.camera ? `Last done ${info.camera.made}. It still has to be redone after a restart.` : '';
+  $('flatOk').textContent = flatAt ? `Flat-field done ${flatAt.slice(11)} ✓` : '';
+}
+let ffLog = [];
+$('ffBtn').onclick = async () => {
+  if (!confirm('Is the plate out, the light pad on and the lid closed?')) return;
+  const d = await post('/api/job/start', {kind: 'flatfield'});
+  if (d.error) alert(d.error);
+};
+
 // ---- progress
 function showJob(d) {
   const j = d.job;
+  if (j && j.kind === 'flatfield') ffLog = d.log || [];
   const isScan = j && j.kind === 'scan';
   const active = isScan && (j.status === 'running' || j.status === 'cancelling');
   running = !!active;
@@ -117,14 +140,20 @@ function showJob(d) {
   if (!isScan || $('progressCard').hidden) return;
 
   const p = j.progress || {};
-  const total = p.total || 0, pct = total ? Math.round(100 * p.taken / total) : 0;
+  const total = p.total || 0;
+  const mapping = p.phase === 'mapping';
+  // the bar covers both steps: focus map ~25 %, photos ~75 %
+  const mapFrac = p.map_total ? Math.min(1, p.map_done / p.map_total) : 0;
+  const pct = Math.round(mapping ? 25 * mapFrac : 25 + (total ? 75 * p.taken / total : 0));
+  $('pPhase').textContent = p.packing ? '3 of 3: packing' : mapping ? '1 of 2: focus map' : '2 of 2: photos';
   $('jobTitle').textContent = j.title;
   $('jobStarted').textContent = 'Started ' + j.started;
   $('pct').innerHTML = `${j.status === 'done' ? 100 : pct}<small>%</small>`;
   $('bar').style.width = (j.status === 'done' ? 100 : pct) + '%';
   $('pWell').textContent = p.packing ? 'all done' : active ? (p.well || 'starting') : '–';
-  $('pPhotos').textContent = total ? `${p.taken} / ${total}` : (p.taken || '–');
-  $('pLeft').textContent = p.packing ? '~1–3 min' : active ? (p.left_min != null ? `~${Math.ceil(p.left_min)} min` : '…') : '–';
+  $('pPhotosL').textContent = mapping ? 'Focus spots' : 'Photos';
+  $('pPhotos').textContent = mapping ? `${p.map_done || 0} / ${p.map_total || '?'}` : total ? `${p.taken} / ${total}` : (p.taken || '–');
+  $('pLeft').textContent = p.packing ? '~1–3 min' : mapping && active ? 'after the map' : active ? (p.left_min != null ? `~${Math.ceil(p.left_min)} min` : '…') : '–';
   const words = {running: 'scanning', cancelling: 'stopping…', done: 'finished', failed: 'stopped: problem', cancelled: 'stopped'};
   $('jobStatus').textContent = p.packing
     ? 'packing into one file' + (p.packed ? ` ${Math.round(100 * p.packed[0] / p.packed[1])}%` : '…')
@@ -142,7 +171,9 @@ function showJob(d) {
   map.names().forEach(w => {
     const k = wells.indexOf(w);
     if (k < 0) return map.mark(w, '', 0);
-    if (j.status === 'done' || (idx >= 0 && k < idx)) return map.mark(w, 'done', 1);
+    if (!mapping && (j.status === 'done' || (idx >= 0 && k < idx))) return map.mark(w, 'done', 1);
+    if (mapping) return map.mark(w, k === idx ? 'scanning' : 'pending',
+                                 k === idx ? ((p.map_done || 0) % 19) / 19 : 0);
     if (k === idx) return map.mark(w, 'scanning', perWell ? (p.taken - k * perWell) / perWell : 0);
     map.mark(w, 'pending', 0);
   });
@@ -164,7 +195,9 @@ async function poll() {
     pill.className = 'chip ' + (st.busy ? 'warn' : st.state === 'Alarm' ? 'bad' : 'ok');
     $('sim').hidden = !st.sim;
     if (!running) map.place(st.x, st.y);
-    showJob(await getJSON('/api/job'));
+    const jd = await getJSON('/api/job');
+    showJob(jd);
+    showFlat(st, jd.job);
   } catch (e) {
     if (e.message !== 'login') { $('st').textContent = 'offline'; $('st').className = 'chip bad'; }
   }
