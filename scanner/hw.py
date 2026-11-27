@@ -38,6 +38,26 @@ def sharpness_of(img):
 
 
 # ---------------------------------------------------------------- real hardware
+def grbl_z_top(ser, margin=0.3):
+    """Highest Z (mm above home) GRBL's soft limits allow: Z travel ($132) minus the
+    homing pull-off ($27), less a margin. Asking for more stops the stage with an
+    alarm, which killed a scan on 2026-11-27 (travel 22, config said 28). None if
+    the settings can't be read."""
+    import re as _re
+    try:
+        ser.reset_input_buffer()
+        ser.write(b"$$\n")
+        buf, t = "", time.time()
+        while time.time() - t < 3 and "ok" not in buf:
+            buf += ser.read(ser.in_waiting or 1).decode(errors="ignore")
+        travel = _re.search(r"\$132=([\d.]+)", buf)
+        pull = _re.search(r"\$27=([\d.]+)", buf)
+        if travel:
+            return float(travel.group(1)) - (float(pull.group(1)) if pull else 1.0) - margin
+    except Exception:
+        pass
+    return None
+
 def _open_real(cfg):
     import live_focus as lf                       # needs picamera2 + pyserial (Pi only)
     lf.Z_LIMIT = float(cfg["z_limit_mm"])
@@ -64,6 +84,11 @@ def _open_real(cfg):
     try:
         print("Connecting to GRBL on", cfg["serial_port"])
         stage = RealStage(cfg["serial_port"])
+        top = grbl_z_top(stage.s)                  # GRBL's real Z travel wins over the config
+        if top is not None and top < float(cfg["z_limit_mm"]):
+            cfg["z_limit_mm"] = round(top, 2)
+            lf.Z_LIMIT = cfg["z_limit_mm"]
+            print(f"Z limit {cfg['z_limit_mm']:.2f} mm (from GRBL's Z travel and pull-off)")
     except Exception as e:
         print("Arduino/GRBL not found:", e)
         stage = MissingStage("Arduino not found: check its USB cable, then restart the app")

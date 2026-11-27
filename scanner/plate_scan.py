@@ -280,6 +280,21 @@ def send(s, line, timeout=180):
     raise RuntimeError(f"{line} -> no reply")
 
 
+def grbl_z_top(s, margin=0.3):
+    """Highest Z above home that GRBL's soft limits allow ($132 travel - $27 pull-off,
+    less a margin). A move above it stops the stage with an alarm (2026-11-27)."""
+    s.reset_input_buffer()
+    s.write(b"$$\n")
+    buf, t = "", time.time()
+    while time.time() - t < 3 and "ok" not in buf:
+        buf += s.read(s.in_waiting or 1).decode(errors="ignore")
+    travel = re.search(r"\$132=([\d.]+)", buf)
+    pull = re.search(r"\$27=([\d.]+)", buf)
+    if not travel:
+        return None
+    return float(travel.group(1)) - (float(pull.group(1)) if pull else 1.0) - margin
+
+
 def position(s):
     """Wait until the stage has stopped, return machine X, Y, Z."""
     for _ in range(1200):
@@ -828,6 +843,11 @@ def prepare(a, size):
     send(s, "$H")
     hx, hy, hz = position(s)
     send(s, "G21")
+    global Z_LIMIT
+    top = grbl_z_top(s)
+    if top is not None and top < Z_LIMIT:
+        Z_LIMIT = top
+        print(f"Z limit {Z_LIMIT:.2f} mm above home (GRBL's Z travel minus pull-off)")
     if not 0.5 <= a.z <= Z_LIMIT:
         raise SystemExit(f"--z {a.z} is outside 0.5 to {Z_LIMIT} mm")
     print(f"Raising the objective to {a.z:.2f} mm...")
